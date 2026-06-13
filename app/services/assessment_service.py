@@ -38,41 +38,23 @@ class AssessmentService:
     # ── Internal helpers ───────────────────────────────────────────────────────
 
     def _calculate_scheduled_at(self, target_completion_date: date) -> datetime:
-        """PRIMARY scheduling window enforcement.
-
-        Picks a random offset in:
-          [settings.assessment_window_min_days, settings.assessment_window_max_days]
-        days after target_completion_date, then sets the time to 09:00 UTC.
-
-        Claude does NOT determine this date. The application always calculates it.
-
-        The secondary guard in SchedulerService.schedule_assessment_jobs()
-        will independently verify the result is within the window before
-        creating APScheduler jobs.
-
-        Returns:
-            A naive UTC datetime within the allowed scheduling window.
-        """
         settings = get_settings()
-        offset_days = random.randint(
-            settings.assessment_window_min_days,
-            settings.assessment_window_max_days,
-        )
+
+        offset_days = random.randint(1, 3)
+
         scheduled_date = target_completion_date + timedelta(days=offset_days)
+
         return datetime(
             scheduled_date.year,
             scheduled_date.month,
             scheduled_date.day,
-            9, 0, 0,
+            9, 0, 0,  # fixed 9 AM UTC
         )
 
-    # ── Internal shared helpers ────────────────────────────────────────────────
-
     def _build_dates(self, scheduled_at: datetime) -> tuple[datetime, datetime]:
-        """Return (reminder_at, due_date) derived from scheduled_at."""
-        settings = get_settings()
-        reminder_at = scheduled_at - timedelta(hours=settings.reminder_hours_before)
-        due_date = scheduled_at + timedelta(days=settings.assessment_due_days)
+        reminder_at = scheduled_at - timedelta(days=1)   # FIXED: 1 day before
+        due_date = scheduled_at + timedelta(days=1)      # optional grace window
+
         return reminder_at, due_date
 
     def _fetch_prompt(self, slug: str) -> PromptTemplate:
