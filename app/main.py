@@ -17,6 +17,7 @@ from app.api.v1 import (
     assessment,
     curriculum,
     grading,
+    health,
     reschedule,
     submission,
 )
@@ -25,9 +26,23 @@ from app.dependencies import get_scheduler_adapter
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    from app.database import Base, engine
+    from app.database import Base, SessionLocal, engine
+    from app.db.seed import check_missing_templates, seed_prompt_templates
 
     Base.metadata.create_all(bind=engine)
+
+    db = SessionLocal()
+    try:
+        seed_prompt_templates(db)
+        missing = check_missing_templates(db)
+        if missing:
+            logging.getLogger(__name__).warning(
+                "Required prompt templates still missing after seed: %s — "
+                "run `python -m app.db.seed` to fix.",
+                missing,
+            )
+    finally:
+        db.close()
 
     get_scheduler_adapter().start()
     yield
@@ -53,3 +68,4 @@ app.include_router(assessment.router, prefix="/api/v1/assessments", tags=["asses
 app.include_router(submission.router, prefix="/api/v1/submissions", tags=["submissions"])
 app.include_router(grading.router, prefix="/api/v1/submissions", tags=["grading"])
 app.include_router(reschedule.router, prefix="/api/v1/assessments", tags=["reschedule"])
+app.include_router(health.router, prefix="/health", tags=["health"])

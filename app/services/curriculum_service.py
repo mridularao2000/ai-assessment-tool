@@ -261,7 +261,10 @@ class CurriculumService:
             .first()
         )
         if template is None:
-            raise NotFoundError(f"No active {slug!r} prompt template found.")
+            raise NotFoundError(
+                f"Prompt templates not initialized (missing: {slug!r}). "
+                "Please run database seed: python -m app.db.seed"
+            )
         return template
 
     def _fetch_url(self, url: str) -> str:
