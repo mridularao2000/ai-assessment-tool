@@ -31,8 +31,9 @@
       max-height: 380px;
       overflow-y: auto;
     }
-    .response-ok  { background: #d1e7dd; border: 1px solid #a3cfbb; color: #0a3622; }
-    .response-err { background: #f8d7da; border: 1px solid #f1aeb5; color: #58151c; }
+    .response-ok       { background: #d1e7dd; border: 1px solid #a3cfbb; color: #0a3622; }
+    .response-err      { background: #f8d7da; border: 1px solid #f1aeb5; color: #58151c; }
+    .response-progress { background: #e7f1ff; border: 1px solid #b6d4fe; color: #084298; }
 
     .form-label { font-weight: 600; margin-bottom: 4px; }
 
@@ -271,9 +272,6 @@
 'use strict';
 
 // ── URL param pre-fill (email deep links) ────────────────────────────────────
-// Email links are formatted as: {APP_BASE_URL}?assessment_id=...&token=...
-// On load, if those params are present, pre-fill all relevant form fields
-// so the user only needs to click "Get Assessment".
 document.addEventListener('DOMContentLoaded', () => {
   const p = new URLSearchParams(window.location.search);
   const aid   = p.get('assessment_id');
@@ -289,7 +287,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
 function setLoading(btn, on) {
   btn.disabled = on;
-  btn.textContent = on ? 'Loading…' : btn.dataset.label;
+  btn.textContent = on ? '⟳ Working…' : btn.dataset.label;
+}
+
+// Hides the result box and wipes its content — call at the top of every handler
+// so a previous error disappears the moment the user clicks again.
+function clearResult(id) {
+  const el = document.getElementById(id);
+  el.innerHTML = '';
+  el.className = 'response-box';
+  el.style.display = 'none';
 }
 
 function showResult(id, data, isError) {
@@ -298,6 +305,22 @@ function showResult(id, data, isError) {
   el.className = 'response-box ' + (isError ? 'response-err' : 'response-ok');
   el.style.display = 'block';
   el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+// Renders an ordered step list inside the result box.
+// Steps before activeIndex are shown as done (✓), the active step spins (⟳),
+// later steps are dimmed (○). Uses innerHTML — step labels are always hardcoded.
+function showProgress(id, steps, activeIndex) {
+  const el = document.getElementById(id);
+  el.innerHTML = steps.map((step, i) => {
+    if (i < activeIndex)
+      return `<span style="color:#146c43">✓  ${step}</span>`;
+    if (i === activeIndex)
+      return `<span style="color:#084298;font-weight:600">⟳  ${step}…</span>`;
+    return `<span style="color:#adb5bd">○  ${step}</span>`;
+  }).join('\n');
+  el.className = 'response-box response-progress';
+  el.style.display = 'block';
 }
 
 async function api(url, opts = {}) {
@@ -313,11 +336,29 @@ async function api(url, opts = {}) {
 }
 
 // ── 1. Create Curriculum ─────────────────────────────────────────────────────
+// Pipeline: ingest resources → LLM curriculum analysis → LLM assessment generation → schedule jobs
+// Advance steps on a timer so the user sees where we are; cancel timers on API return.
+
+const CURRICULUM_STEPS = [
+  'Ingesting resources (URLs, files, notes)',
+  'Analysing curriculum content with AI',
+  'Generating assessment questions with AI',
+  'Scheduling assessment jobs',
+];
 
 document.getElementById('curriculumForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const btn = document.getElementById('curriculumBtn');
+  clearResult('curriculumResult');
   setLoading(btn, true);
+  showProgress('curriculumResult', CURRICULUM_STEPS, 0);
+
+  // Advance to step 1 after ~4 s (resource ingestion done, LLM analysis starts)
+  // Advance to step 2 after ~13 s (analysis done, assessment generation starts)
+  const timers = [
+    setTimeout(() => showProgress('curriculumResult', CURRICULUM_STEPS, 1), 4000),
+    setTimeout(() => showProgress('curriculumResult', CURRICULUM_STEPS, 2), 13000),
+  ];
 
   const fd = new FormData();
   fd.append('topic', document.getElementById('c_topic').value.trim());
@@ -338,6 +379,7 @@ document.getElementById('curriculumForm').addEventListener('submit', async (e) =
     .forEach(f => fd.append('files', f));
 
   const { ok, data } = await api('/api/v1/curriculum/', { method: 'POST', body: fd });
+  timers.forEach(t => clearTimeout(t));
   showResult('curriculumResult', data, !ok);
   setLoading(btn, false);
 });
@@ -346,6 +388,8 @@ document.getElementById('curriculumForm').addEventListener('submit', async (e) =
 
 async function getAssessment() {
   const btn = document.getElementById('assessmentBtn');
+  clearResult('assessmentResult');
+
   const id    = document.getElementById('a_id').value.trim();
   const token = document.getElementById('a_token').value.trim();
 
@@ -355,15 +399,16 @@ async function getAssessment() {
   }
 
   setLoading(btn, true);
+  showProgress('assessmentResult', ['Fetching assessment'], 0);
+
   const url = `/api/v1/assessments/${encodeURIComponent(id)}?token=${encodeURIComponent(token)}`;
   const { ok, data } = await api(url);
   showResult('assessmentResult', data, !ok);
 
-  // Auto-fill Submit Answer fields so you don't have to retype
   if (ok) {
-    document.getElementById('s_id').value    = id;
-    document.getElementById('s_token').value = token;
-    document.getElementById('re_id').value   = id;
+    document.getElementById('s_id').value     = id;
+    document.getElementById('s_token').value  = token;
+    document.getElementById('re_id').value    = id;
     document.getElementById('re_token').value = token;
   }
 
@@ -383,12 +428,22 @@ document.getElementById('submissionForm').addEventListener('submit', async (e) =
   e.preventDefault();
   const btn  = document.getElementById('submissionBtn');
   const type = document.getElementById('s_type').value;
+  clearResult('submissionResult');
+
+  if (type === 'file') {
+    const f = document.getElementById('s_file').files[0];
+    if (!f) {
+      showResult('submissionResult', 'Please select a file to upload.', true);
+      return;
+    }
+  }
 
   setLoading(btn, true);
+  showProgress('submissionResult', ['Submitting your answer'], 0);
 
   const fd = new FormData();
-  fd.append('assessment_id',  document.getElementById('s_id').value.trim());
-  fd.append('token',          document.getElementById('s_token').value.trim());
+  fd.append('assessment_id',   document.getElementById('s_id').value.trim());
+  fd.append('token',           document.getElementById('s_token').value.trim());
   fd.append('submission_type', type);
 
   if (type === 'text') {
@@ -396,19 +451,12 @@ document.getElementById('submissionForm').addEventListener('submit', async (e) =
   } else if (type === 'github_url') {
     fd.append('github_url', document.getElementById('s_github').value.trim());
   } else if (type === 'file') {
-    const f = document.getElementById('s_file').files[0];
-    if (!f) {
-      showResult('submissionResult', 'Please select a file to upload.', true);
-      setLoading(btn, false);
-      return;
-    }
-    fd.append('file', f);
+    fd.append('file', document.getElementById('s_file').files[0]);
   }
 
   const { ok, data } = await api('/api/v1/submissions/', { method: 'POST', body: fd });
   showResult('submissionResult', data, !ok);
 
-  // Auto-fill results section
   if (ok && data.submission_id) {
     document.getElementById('r_id').value = data.submission_id;
   }
@@ -420,20 +468,29 @@ document.getElementById('submissionForm').addEventListener('submit', async (e) =
 
 async function getResults() {
   const btn = document.getElementById('resultsBtn');
-  const id  = document.getElementById('r_id').value.trim();
+  clearResult('resultsResult');
 
+  const id = document.getElementById('r_id').value.trim();
   if (!id) {
     showResult('resultsResult', 'Submission ID is required.', true);
     return;
   }
 
   setLoading(btn, true);
+  showProgress('resultsResult', ['Fetching grading results'], 0);
+
   const { ok, data } = await api(`/api/v1/submissions/${encodeURIComponent(id)}/results`);
   showResult('resultsResult', data, !ok);
   setLoading(btn, false);
 }
 
 // ── 5. Reschedule ────────────────────────────────────────────────────────────
+// Pipeline: LLM classifies the reason → reschedule decision applied
+
+const RESCHEDULE_STEPS = [
+  'Classifying reason with AI',
+  'Processing reschedule request',
+];
 
 function updateCharCount() {
   const n  = document.getElementById('re_reason').value.length;
@@ -448,6 +505,7 @@ document.getElementById('rescheduleForm').addEventListener('submit', async (e) =
   const id     = document.getElementById('re_id').value.trim();
   const token  = document.getElementById('re_token').value.trim();
   const reason = document.getElementById('re_reason').value.trim();
+  clearResult('rescheduleResult');
 
   if (reason.length < 20) {
     showResult('rescheduleResult', 'Reason must be at least 20 characters.', true);
@@ -455,6 +513,9 @@ document.getElementById('rescheduleForm').addEventListener('submit', async (e) =
   }
 
   setLoading(btn, true);
+  showProgress('rescheduleResult', RESCHEDULE_STEPS, 0);
+  const timer = setTimeout(() => showProgress('rescheduleResult', RESCHEDULE_STEPS, 1), 3000);
+
   const { ok, data } = await api(
     `/api/v1/assessments/${encodeURIComponent(id)}/reschedule`,
     {
@@ -463,6 +524,7 @@ document.getElementById('rescheduleForm').addEventListener('submit', async (e) =
       body:    JSON.stringify({ token, reason }),
     }
   );
+  clearTimeout(timer);
   showResult('rescheduleResult', data, !ok);
   setLoading(btn, false);
 });
