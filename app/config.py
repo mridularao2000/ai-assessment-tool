@@ -17,6 +17,7 @@ class Settings(BaseSettings):
 
     # ── User ──────────────────────────────────────────────────────────────────
     user_email: str = ""
+    submission_token_secret: str = ""
 
     # ── Assessment scheduling ─────────────────────────────────────────────────
     assessment_window_min_days: int = Field(default=1, ge=1)
@@ -29,6 +30,12 @@ class Settings(BaseSettings):
 
     # ── Mastery ───────────────────────────────────────────────────────────────
     mastery_threshold: float = Field(default=85.0, ge=0.0, le=100.0)
+
+    # ── Email (Resend) ────────────────────────────────────────────────────────
+    resend_api_key: str = ""
+    resend_from_email: str = ""
+    resend_from_name: str = "AI Assessment System"
+    app_base_url: str = "http://localhost:8000"
 
     # ── LLM ───────────────────────────────────────────────────────────────────
     anthropic_api_key: str = ""

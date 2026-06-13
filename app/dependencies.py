@@ -4,6 +4,8 @@ Singletons (created once at module load):
   _scheduler_adapter — APSchedulerAdapter instance shared across requests
   _llm               — AnthropicLLMAdapter when ANTHROPIC_API_KEY is set,
                        StubLLMAdapter otherwise (fails loudly on any call)
+  _email             — ResendEmailAdapter when RESEND_API_KEY is set,
+                       StubEmailAdapter otherwise (fails loudly on any call)
 
 Per-request dependencies (instantiated per request via Depends):
   get_db                — SQLAlchemy Session
@@ -24,6 +26,12 @@ from sqlalchemy.orm import Session
 from app.adapters.apscheduler_adapter import APSchedulerAdapter
 from app.config import get_settings
 from app.database import get_db
+from app.interfaces.email import (
+    AssessmentEmailData,
+    EmailInterface,
+    ReminderEmailData,
+    ResultsEmailData,
+)
 from app.interfaces.llm import (
     AssessmentGenerationRequest,
     AssessmentGenerationResult,
@@ -42,6 +50,21 @@ from app.services.grading_service import GradingService
 from app.services.reschedule_service import RescheduleService
 from app.services.scheduler_service import SchedulerService
 from app.services.submission_service import SubmissionService
+
+
+# ── Stub email adapter ────────────────────────────────────────────────────────
+
+class StubEmailAdapter:
+    """Development stub — raises NotImplementedError for all email sends."""
+
+    def send_assessment_email(self, data: AssessmentEmailData) -> None:
+        raise NotImplementedError("StubEmailAdapter: set RESEND_API_KEY to enable email.")
+
+    def send_reminder_email(self, data: ReminderEmailData) -> None:
+        raise NotImplementedError("StubEmailAdapter: set RESEND_API_KEY to enable email.")
+
+    def send_results_email(self, data: ResultsEmailData) -> None:
+        raise NotImplementedError("StubEmailAdapter: set RESEND_API_KEY to enable email.")
 
 
 # ── Stub LLM adapter ──────────────────────────────────────────────────────────
@@ -86,6 +109,16 @@ def _build_llm() -> LLMInterface:
 
 
 _llm: LLMInterface = _build_llm()
+
+
+def _build_email() -> EmailInterface:
+    if get_settings().resend_api_key:
+        from app.adapters.resend_email import ResendEmailAdapter
+        return ResendEmailAdapter()  # type: ignore[return-value]
+    return StubEmailAdapter()  # type: ignore[return-value]
+
+
+_email: EmailInterface = _build_email()
 
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────

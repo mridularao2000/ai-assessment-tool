@@ -35,6 +35,14 @@ class APSchedulerAdapter:
         settings = get_settings()
         self._scheduler = BackgroundScheduler(
             jobstores={"default": SQLAlchemyJobStore(url=settings.database_url)},
+            job_defaults={
+                # Fire jobs that were missed while the server was down,
+                # no matter how late, so emails are never silently skipped.
+                "misfire_grace_time": None,
+                # If multiple missed firings stack up (e.g. after a long outage),
+                # run each job once instead of replaying every missed tick.
+                "coalesce": True,
+            },
         )
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────

@@ -1,65 +1,96 @@
 from __future__ import annotations
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
+from app.config import get_settings
+from app.exceptions import NotFoundError
 from app.interfaces.email import (
     AssessmentEmailData,
     EmailInterface,
     ReminderEmailData,
     ResultsEmailData,
 )
-
-
-class StubEmailAdapter:
-    """Development stub — raises NotImplementedError for all email sends.
-    Replace with ResendEmailAdapter when the email adapter is implemented.
-    """
-
-    def send_assessment_email(self, data: AssessmentEmailData) -> None:
-        raise NotImplementedError("StubEmailAdapter: wire ResendEmailAdapter.")
-
-    def send_reminder_email(self, data: ReminderEmailData) -> None:
-        raise NotImplementedError("StubEmailAdapter: wire ResendEmailAdapter.")
-
-    def send_results_email(self, data: ResultsEmailData) -> None:
-        raise NotImplementedError("StubEmailAdapter: wire ResendEmailAdapter.")
+from app.models.assessment import Assessment
+from app.models.submission import Submission
 
 
 class EmailService:
-    """Sends transactional emails for assessment lifecycle events.
-
-    Depends on:
-      db    — SQLAlchemy session for loading Assessment/Submission/Grade data
-      email — EmailInterface implementation (e.g. ResendEmailAdapter)
-    """
+    """Sends transactional emails for assessment lifecycle events."""
 
     def __init__(self, db: Session, email: EmailInterface) -> None:
         self.db = db
         self.email = email
 
-    def send_assessment_email(self, assessment_id: str) -> None:
-        """Load assessment data and send the assessment delivery email.
+    def _submission_link(self, assessment_id: str, token: str) -> str:
+        base = get_settings().app_base_url.rstrip("/")
+        return f"{base}?assessment_id={assessment_id}&token={token}"
 
-        Raises:
-            NotFoundError: if assessment_id does not exist.
-            EmailDeliveryError: if the email provider fails.
-        """
-        raise NotImplementedError
+    def send_assessment_email(self, assessment_id: str) -> None:
+        assessment = (
+            self.db.query(Assessment)
+            .options(joinedload(Assessment.curriculum))
+            .filter(Assessment.id == assessment_id)
+            .first()
+        )
+        if not assessment:
+            raise NotFoundError(f"Assessment {assessment_id!r} not found")
+
+        self.email.send_assessment_email(AssessmentEmailData(
+            recipient_email=get_settings().user_email,
+            assessment_id=assessment_id,
+            topic=assessment.curriculum.topic,
+            assessment_text=assessment.assessment_text or "",
+            duration_minutes=assessment.duration_minutes,
+            scheduled_at=assessment.scheduled_at,
+            due_date=assessment.due_date,
+            submission_link=self._submission_link(
+                assessment_id, assessment.submission_token
+            ),
+        ))
 
     def send_reminder_email(self, assessment_id: str) -> None:
-        """Load assessment data and send the 24-hour reminder email.
+        assessment = (
+            self.db.query(Assessment)
+            .options(joinedload(Assessment.curriculum))
+            .filter(Assessment.id == assessment_id)
+            .first()
+        )
+        if not assessment:
+            raise NotFoundError(f"Assessment {assessment_id!r} not found")
 
-        Raises:
-            NotFoundError: if assessment_id does not exist.
-            EmailDeliveryError: if the email provider fails.
-        """
-        raise NotImplementedError
+        self.email.send_reminder_email(ReminderEmailData(
+            recipient_email=get_settings().user_email,
+            assessment_id=assessment_id,
+            topic=assessment.curriculum.topic,
+            due_date=assessment.due_date,
+            submission_link=self._submission_link(
+                assessment_id, assessment.submission_token
+            ),
+        ))
 
     def send_results_email(self, submission_id: str) -> None:
-        """Load grade data and send the results email.
+        submission = (
+            self.db.query(Submission)
+            .options(
+                joinedload(Submission.assessment).joinedload(Assessment.curriculum),
+                joinedload(Submission.grade),
+            )
+            .filter(Submission.id == submission_id)
+            .first()
+        )
+        if not submission or not submission.grade:
+            raise NotFoundError(f"Graded submission {submission_id!r} not found")
 
-        Raises:
-            NotFoundError: if submission_id or its grade does not exist.
-            EmailDeliveryError: if the email provider fails.
-        """
-        raise NotImplementedError
+        settings = get_settings()
+        grade = submission.grade
+        passed = grade.mastery_score >= settings.mastery_threshold
+
+        self.email.send_results_email(ResultsEmailData(
+            recipient_email=settings.user_email,
+            topic=submission.assessment.curriculum.topic,
+            attempt_number=submission.assessment.attempt_number,
+            mastery_score=grade.mastery_score,
+            passed=passed,
+            overall_feedback=grade.overall_feedback,
+            weak_areas=grade.weak_areas or [],
+        ))

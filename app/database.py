@@ -1,6 +1,6 @@
 from collections.abc import Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import event, create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import get_settings
@@ -15,6 +15,13 @@ engine = create_engine(
     # Surface SQLite constraint errors immediately rather than at commit time.
     echo=False,
 )
+
+
+@event.listens_for(engine, "connect")
+def _set_wal_mode(dbapi_conn, _connection_record) -> None:
+    cursor = dbapi_conn.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.close()
 
 SessionLocal = sessionmaker(
     autocommit=False,

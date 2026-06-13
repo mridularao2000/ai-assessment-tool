@@ -1,6 +1,6 @@
 .env
-nuploads/
-nassessment.db
+uploads/
+assessment.db
 __pycache__/
 .venv/
 *.pyc

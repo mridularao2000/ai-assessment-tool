@@ -1,0 +1,57 @@
+services:
+  - type: web
+    name: ai-assessment
+    runtime: python
+    plan: starter          # Persistent disk requires Starter ($7/mo) or above.
+    buildCommand: pip install -r requirements.txt
+    # CRITICAL: exactly 1 worker. Multiple workers = multiple scheduler threads
+    # = duplicate emails. Never raise this above 1.
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
+
+    disk:
+      name: assessment-data
+      mountPath: /data
+      sizeGB: 1            # Holds SQLite DB + uploaded files. Increase if needed.
+
+    envVars:
+      # SQLite file lives on the persistent disk — survives redeploys and restarts.
+      # Four slashes = absolute path (/data/assessment.db).
+      - key: DATABASE_URL
+        value: sqlite:////data/assessment.db
+
+      - key: UPLOADS_DIR
+        value: /data/uploads
+
+      # Set these in the Render dashboard (sync: false = not committed to source).
+      - key: ANTHROPIC_API_KEY
+        sync: false
+
+      - key: RESEND_API_KEY
+        sync: false
+
+      - key: RESEND_FROM_EMAIL
+        sync: false          # Must be a verified sender in your Resend account.
+
+      - key: RESEND_FROM_NAME
+        value: AI Assessment System
+
+      # Set to your actual Render service URL once deployed, e.g.:
+      #   https://ai-assessment.onrender.com
+      - key: APP_BASE_URL
+        sync: false
+
+      - key: USER_EMAIL
+        sync: false          # Email address that receives all assessments and results.
+
+      # Render auto-generates a random secret on first deploy.
+      - key: SUBMISSION_TOKEN_SECRET
+        generateValue: true
+
+      - key: LLM_MODEL
+        value: claude-sonnet-4-6
+
+      - key: LLM_MAX_RETRIES
+        value: 3
+
+      - key: MASTERY_THRESHOLD
+        value: 85.0

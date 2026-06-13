@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Assessment — Control Panel</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body { background: #f1f3f5; }
+
+    .section-badge {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 26px; height: 26px; border-radius: 50%;
+      background: #0d6efd; color: #fff;
+      font-size: 0.75rem; font-weight: 700;
+      flex-shrink: 0; margin-right: 8px;
+    }
+
+    .card-title { display: flex; align-items: center; }
+
+    .response-box {
+      display: none;
+      margin-top: 14px;
+      padding: 12px 14px;
+      border-radius: 6px;
+      font-family: ui-monospace, "Cascadia Code", monospace;
+      font-size: 0.82rem;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 380px;
+      overflow-y: auto;
+    }
+    .response-ok  { background: #d1e7dd; border: 1px solid #a3cfbb; color: #0a3622; }
+    .response-err { background: #f8d7da; border: 1px solid #f1aeb5; color: #58151c; }
+
+    .form-label { font-weight: 600; margin-bottom: 4px; }
+
+    /* Submission type toggle animation */
+    .sub-section { transition: opacity 0.15s; }
+    .sub-section.d-none { opacity: 0; }
+  </style>
+</head>
+<body>
+<div class="container py-4 py-md-5" style="max-width: 700px">
+
+  <!-- Header -->
+  <div class="mb-4">
+    <h3 class="fw-bold mb-1">AI Assessment System</h3>
+    <p class="text-muted mb-2">Developer control panel</p>
+    <div class="alert alert-info alert-sm py-2 small mb-0">
+      <strong>Workflow:</strong>
+      Create Curriculum (→ assessment auto-generated &amp; emailed) →
+      Get Assessment with ID + token from email →
+      Submit Answer → Get Results.
+      For reschedule, use the same assessment ID + token.
+    </div>
+  </div>
+
+  <!-- ── 1. Create Curriculum ─────────────────────────────────────────────── -->
+  <div class="card mb-4 shadow-sm border-0">
+    <div class="card-body p-4">
+      <h5 class="card-title mb-3"><span class="section-badge">1</span>Create Curriculum</h5>
+      <form id="curriculumForm" novalidate>
+
+        <div class="mb-3">
+          <label class="form-label" for="c_topic">Topic <span class="text-danger">*</span></label>
+          <input type="text" class="form-control" id="c_topic"
+                 placeholder="e.g. Python async programming" required>
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label" for="c_date">Target Completion Date <span class="text-danger">*</span></label>
+          <input type="date" class="form-control" id="c_date" required>
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label" for="c_notes">Notes
+            <span class="text-muted fw-normal">(optional)</span>
+          </label>
+          <textarea class="form-control" id="c_notes" rows="3"
+                    placeholder="Free-form study notes, key concepts, anything relevant…"></textarea>
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label" for="c_links">Links
+            <span class="text-muted fw-normal">(one URL per line, optional)</span>
+          </label>
+          <textarea class="form-control font-monospace" id="c_links" rows="2"
+                    placeholder="https://docs.python.org/3/library/asyncio.html&#10;https://realpython.com/async-io-python/"></textarea>
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label" for="c_repos">GitHub Repos
+            <span class="text-muted fw-normal">(one URL per line, optional)</span>
+          </label>
+          <textarea class="form-control font-monospace" id="c_repos" rows="2"
+                    placeholder="https://github.com/user/repo"></textarea>
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label" for="c_files">Upload Files
+            <span class="text-muted fw-normal">(optional, multiple allowed)</span>
+          </label>
+          <input type="file" class="form-control" id="c_files" multiple>
+        </div>
+
+        <p class="text-muted small mb-3">
+          At least one of notes, links, GitHub repos, or a file is required.
+        </p>
+
+        <button type="submit" class="btn btn-primary"
+                id="curriculumBtn" data-label="Create Curriculum">
+          Create Curriculum
+        </button>
+      </form>
+      <div id="curriculumResult" class="response-box"></div>
+    </div>
+  </div>
+
+  <!-- ── 2. Get Assessment ────────────────────────────────────────────────── -->
+  <div class="card mb-4 shadow-sm border-0">
+    <div class="card-body p-4">
+      <h5 class="card-title mb-1"><span class="section-badge">2</span>Get Assessment</h5>
+      <p class="text-muted small mb-3">
+        The assessment ID and token arrive in your scheduled email.
+        During local testing you can find the token in the <code>assessment</code> table
+        (<code>submission_token</code> column).
+      </p>
+
+      <div class="mb-3">
+        <label class="form-label" for="a_id">Assessment ID</label>
+        <input type="text" class="form-control font-monospace" id="a_id" placeholder="UUID">
+      </div>
+
+      <div class="mb-3">
+        <label class="form-label" for="a_token">Token</label>
+        <input type="text" class="form-control font-monospace" id="a_token"
+               placeholder="HMAC token from email link">
+      </div>
+
+      <button class="btn btn-primary"
+              id="assessmentBtn" data-label="Get Assessment"
+              onclick="getAssessment()">
+        Get Assessment
+      </button>
+      <div id="assessmentResult" class="response-box"></div>
+    </div>
+  </div>
+
+  <!-- ── 3. Submit Answer ─────────────────────────────────────────────────── -->
+  <div class="card mb-4 shadow-sm border-0">
+    <div class="card-body p-4">
+      <h5 class="card-title mb-3"><span class="section-badge">3</span>Submit Answer</h5>
+      <form id="submissionForm" novalidate>
+
+        <div class="row g-3 mb-3">
+          <div class="col-sm-7">
+            <label class="form-label" for="s_id">Assessment ID</label>
+            <input type="text" class="form-control font-monospace" id="s_id" placeholder="UUID">
+          </div>
+          <div class="col-sm-5">
+            <label class="form-label" for="s_token">Token</label>
+            <input type="text" class="form-control font-monospace" id="s_token" placeholder="Token">
+          </div>
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label" for="s_type">Submission Type</label>
+          <select class="form-select" id="s_type" onchange="toggleSubmissionType()">
+            <option value="text">Text answer</option>
+            <option value="github_url">GitHub URL</option>
+            <option value="file">File upload</option>
+          </select>
+        </div>
+
+        <div id="s_text_section" class="sub-section mb-3">
+          <label class="form-label" for="s_text">Your Answer</label>
+          <textarea class="form-control" id="s_text" rows="7"
+                    placeholder="Write your answer here…"></textarea>
+        </div>
+
+        <div id="s_github_section" class="sub-section mb-3 d-none">
+          <label class="form-label" for="s_github">GitHub Repository URL</label>
+          <input type="url" class="form-control" id="s_github"
+                 placeholder="https://github.com/user/repo">
+        </div>
+
+        <div id="s_file_section" class="sub-section mb-3 d-none">
+          <label class="form-label" for="s_file">File</label>
+          <input type="file" class="form-control" id="s_file">
+        </div>
+
+        <button type="submit" class="btn btn-primary"
+                id="submissionBtn" data-label="Submit Answer">
+          Submit Answer
+        </button>
+      </form>
+      <div id="submissionResult" class="response-box"></div>
+    </div>
+  </div>
+
+  <!-- ── 4. Get Results ──────────────────────────────────────────────────── -->
+  <div class="card mb-4 shadow-sm border-0">
+    <div class="card-body p-4">
+      <h5 class="card-title mb-1"><span class="section-badge">4</span>Get Results</h5>
+      <p class="text-muted small mb-3">
+        Grading runs asynchronously after submission. If you get a 404, wait a moment and retry.
+      </p>
+
+      <div class="mb-3">
+        <label class="form-label" for="r_id">Submission ID</label>
+        <input type="text" class="form-control font-monospace" id="r_id"
+               placeholder="UUID — auto-filled after a successful submission above">
+      </div>
+
+      <button class="btn btn-primary"
+              id="resultsBtn" data-label="Get Results"
+              onclick="getResults()">
+        Get Results
+      </button>
+      <div id="resultsResult" class="response-box"></div>
+    </div>
+  </div>
+
+  <!-- ── 5. Reschedule ───────────────────────────────────────────────────── -->
+  <div class="card mb-4 shadow-sm border-0">
+    <div class="card-body p-4">
+      <h5 class="card-title mb-1"><span class="section-badge">5</span>Reschedule Assessment</h5>
+      <p class="text-muted small mb-3">
+        Only active or scheduled assessments can be rescheduled.
+        The reason is classified by Claude — medical, interview, and emergency requests
+        are approved; procrastination and lack-of-preparation are denied.
+      </p>
+
+      <div class="row g-3 mb-3">
+        <div class="col-sm-7">
+          <label class="form-label" for="re_id">Assessment ID</label>
+          <input type="text" class="form-control font-monospace" id="re_id" placeholder="UUID">
+        </div>
+        <div class="col-sm-5">
+          <label class="form-label" for="re_token">Token</label>
+          <input type="text" class="form-control font-monospace" id="re_token" placeholder="Token">
+        </div>
+      </div>
+
+      <form id="rescheduleForm" novalidate>
+        <div class="mb-3">
+          <label class="form-label" for="re_reason">
+            Reason
+            <span class="text-muted fw-normal">(minimum 20 characters)</span>
+          </label>
+          <textarea class="form-control" id="re_reason" rows="3"
+                    placeholder="e.g. I have a confirmed medical appointment on the assessment date and cannot attend."
+                    oninput="updateCharCount()"></textarea>
+          <div class="form-text" id="reCharCount">0 / 20 minimum</div>
+        </div>
+        <button type="submit" class="btn btn-primary"
+                id="rescheduleBtn" data-label="Request Reschedule">
+          Request Reschedule
+        </button>
+      </form>
+      <div id="rescheduleResult" class="response-box"></div>
+    </div>
+  </div>
+
+</div><!-- /container -->
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+'use strict';
+
+// ── URL param pre-fill (email deep links) ────────────────────────────────────
+// Email links are formatted as: {APP_BASE_URL}?assessment_id=...&token=...
+// On load, if those params are present, pre-fill all relevant form fields
+// so the user only needs to click "Get Assessment".
+document.addEventListener('DOMContentLoaded', () => {
+  const p = new URLSearchParams(window.location.search);
+  const aid   = p.get('assessment_id');
+  const token = p.get('token');
+  if (aid && token) {
+    ['a_id', 's_id', 're_id'].forEach(id => document.getElementById(id).value = aid);
+    ['a_token', 's_token', 're_token'].forEach(id => document.getElementById(id).value = token);
+    document.getElementById('assessmentBtn').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+});
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function setLoading(btn, on) {
+  btn.disabled = on;
+  btn.textContent = on ? 'Loading…' : btn.dataset.label;
+}
+
+function showResult(id, data, isError) {
+  const el = document.getElementById(id);
+  el.textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+  el.className = 'response-box ' + (isError ? 'response-err' : 'response-ok');
+  el.style.display = 'block';
+  el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+async function api(url, opts = {}) {
+  try {
+    const res = await fetch(url, opts);
+    let data;
+    try { data = await res.json(); }
+    catch { data = { error: 'Server returned non-JSON response', status: res.status }; }
+    return { ok: res.ok, status: res.status, data };
+  } catch (err) {
+    return { ok: false, status: 0, data: { error: String(err) } };
+  }
+}
+
+// ── 1. Create Curriculum ─────────────────────────────────────────────────────
+
+document.getElementById('curriculumForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById('curriculumBtn');
+  setLoading(btn, true);
+
+  const fd = new FormData();
+  fd.append('topic', document.getElementById('c_topic').value.trim());
+  fd.append('target_completion_date', document.getElementById('c_date').value);
+
+  const notes = document.getElementById('c_notes').value.trim();
+  if (notes) fd.append('notes', notes);
+
+  document.getElementById('c_links').value
+    .split('\n').map(s => s.trim()).filter(Boolean)
+    .forEach(u => fd.append('links', u));
+
+  document.getElementById('c_repos').value
+    .split('\n').map(s => s.trim()).filter(Boolean)
+    .forEach(u => fd.append('github_repos', u));
+
+  Array.from(document.getElementById('c_files').files)
+    .forEach(f => fd.append('files', f));
+
+  const { ok, data } = await api('/api/v1/curriculum/', { method: 'POST', body: fd });
+  showResult('curriculumResult', data, !ok);
+  setLoading(btn, false);
+});
+
+// ── 2. Get Assessment ────────────────────────────────────────────────────────
+
+async function getAssessment() {
+  const btn = document.getElementById('assessmentBtn');
+  const id    = document.getElementById('a_id').value.trim();
+  const token = document.getElementById('a_token').value.trim();
+
+  if (!id || !token) {
+    showResult('assessmentResult', 'Both Assessment ID and Token are required.', true);
+    return;
+  }
+
+  setLoading(btn, true);
+  const url = `/api/v1/assessments/${encodeURIComponent(id)}?token=${encodeURIComponent(token)}`;
+  const { ok, data } = await api(url);
+  showResult('assessmentResult', data, !ok);
+
+  // Auto-fill Submit Answer fields so you don't have to retype
+  if (ok) {
+    document.getElementById('s_id').value    = id;
+    document.getElementById('s_token').value = token;
+    document.getElementById('re_id').value   = id;
+    document.getElementById('re_token').value = token;
+  }
+
+  setLoading(btn, false);
+}
+
+// ── 3. Submit Answer ─────────────────────────────────────────────────────────
+
+function toggleSubmissionType() {
+  const type = document.getElementById('s_type').value;
+  document.getElementById('s_text_section').classList.toggle('d-none',   type !== 'text');
+  document.getElementById('s_github_section').classList.toggle('d-none', type !== 'github_url');
+  document.getElementById('s_file_section').classList.toggle('d-none',   type !== 'file');
+}
+
+document.getElementById('submissionForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn  = document.getElementById('submissionBtn');
+  const type = document.getElementById('s_type').value;
+
+  setLoading(btn, true);
+
+  const fd = new FormData();
+  fd.append('assessment_id',  document.getElementById('s_id').value.trim());
+  fd.append('token',          document.getElementById('s_token').value.trim());
+  fd.append('submission_type', type);
+
+  if (type === 'text') {
+    fd.append('text_content', document.getElementById('s_text').value);
+  } else if (type === 'github_url') {
+    fd.append('github_url', document.getElementById('s_github').value.trim());
+  } else if (type === 'file') {
+    const f = document.getElementById('s_file').files[0];
+    if (!f) {
+      showResult('submissionResult', 'Please select a file to upload.', true);
+      setLoading(btn, false);
+      return;
+    }
+    fd.append('file', f);
+  }
+
+  const { ok, data } = await api('/api/v1/submissions/', { method: 'POST', body: fd });
+  showResult('submissionResult', data, !ok);
+
+  // Auto-fill results section
+  if (ok && data.submission_id) {
+    document.getElementById('r_id').value = data.submission_id;
+  }
+
+  setLoading(btn, false);
+});
+
+// ── 4. Get Results ───────────────────────────────────────────────────────────
+
+async function getResults() {
+  const btn = document.getElementById('resultsBtn');
+  const id  = document.getElementById('r_id').value.trim();
+
+  if (!id) {
+    showResult('resultsResult', 'Submission ID is required.', true);
+    return;
+  }
+
+  setLoading(btn, true);
+  const { ok, data } = await api(`/api/v1/submissions/${encodeURIComponent(id)}/results`);
+  showResult('resultsResult', data, !ok);
+  setLoading(btn, false);
+}
+
+// ── 5. Reschedule ────────────────────────────────────────────────────────────
+
+function updateCharCount() {
+  const n  = document.getElementById('re_reason').value.length;
+  const el = document.getElementById('reCharCount');
+  el.textContent = `${n} / 20 minimum`;
+  el.className   = n >= 20 ? 'form-text text-success' : 'form-text text-muted';
+}
+
+document.getElementById('rescheduleForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn    = document.getElementById('rescheduleBtn');
+  const id     = document.getElementById('re_id').value.trim();
+  const token  = document.getElementById('re_token').value.trim();
+  const reason = document.getElementById('re_reason').value.trim();
+
+  if (reason.length < 20) {
+    showResult('rescheduleResult', 'Reason must be at least 20 characters.', true);
+    return;
+  }
+
+  setLoading(btn, true);
+  const { ok, data } = await api(
+    `/api/v1/assessments/${encodeURIComponent(id)}/reschedule`,
+    {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ token, reason }),
+    }
+  );
+  showResult('rescheduleResult', data, !ok);
+  setLoading(btn, false);
+});
+</script>
+</body>
+</html>
