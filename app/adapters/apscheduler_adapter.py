@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from apscheduler.jobstores.base import JobLookupError as APSJobLookupError
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
@@ -104,7 +104,7 @@ class APSchedulerAdapter:
         self._scheduler.add_job(
             expire_assessment_job,
             trigger="date",
-            run_date=due_date,
+            run_date=due_date + timedelta(days=2),
             id=expire_id,
             args=[assessment_id],
             replace_existing=True,

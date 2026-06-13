@@ -52,8 +52,8 @@ class AssessmentService:
         )
 
     def _build_dates(self, scheduled_at: datetime) -> tuple[datetime, datetime]:
-        reminder_at = scheduled_at - timedelta(days=1)   # FIXED: 1 day before
-        due_date = scheduled_at + timedelta(days=1)      # optional grace window
+        reminder_at = scheduled_at - timedelta(days=1)   # 1 day before
+        due_date = scheduled_at + timedelta(days=2)      # 2-day submission window
 
         return reminder_at, due_date
 

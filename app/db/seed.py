@@ -38,22 +38,39 @@ Topic: {topic}
 Curriculum Materials (what the student studied):
 {curriculum_content}
 
-Design a comprehensive technical assessment that tests the student's mastery \
-of the topic. The assessment should:
-- Include a mix of conceptual questions and practical exercises
-- Require the student to demonstrate both understanding and application
-- Be completable by a motivated student within the allotted time
-- Be clear, unambiguous, and fair
+IMPORTANT — choose the right assessment FORMAT based on the curriculum:
+
+1. CODING / IMPLEMENTATION-FOCUSED curriculum
+   Indicators: building components, writing code, implementing features, \
+creating apps, practicing a framework or language, working with APIs or \
+data structures.
+   → Generate a TIMED CODING PROBLEM. State the problem clearly with \
+requirements, constraints, and example inputs/outputs (if applicable). \
+Frame it as: "You have X minutes to implement the following…". \
+Do NOT ask written explanation questions — the code is the answer.
+   → Set duration_minutes to 60–120 depending on complexity.
+
+2. CONCEPTUAL / THEORETICAL curriculum
+   Indicators: reading documentation, studying concepts, understanding \
+architecture, comparing approaches, reading articles or books.
+   → Use written questions: explain, compare, describe trade-offs, \
+give examples. No coding required.
+   → Set duration_minutes to 45–90.
+
+3. MIXED curriculum (coding practice + theory)
+   → Combine: 1–2 short written questions AND 1 coding exercise.
+   → Set duration_minutes to 90–120.
+
+Infer the format entirely from the curriculum materials above. \
+Do not default to written questions for coding-focused content.
 
 Respond with a single JSON object containing exactly these fields:
 {{
-  "assessment_text": "The full assessment presented to the student. Use markdown formatting. Number each question clearly and include code blocks where appropriate.",
-  "rubric": "A detailed marking rubric for the assessor. For each question or section describe what constitutes full marks, partial marks, and no marks. Be specific about expected answers.",
+  "assessment_text": "The full assessment presented to the student. Use markdown formatting. For coding assessments: state the problem, requirements, constraints, and examples clearly. For written assessments: number each question. For mixed: separate the sections with headings.",
+  "rubric": "A detailed marking rubric. For coding: describe what a correct implementation looks like, edge cases that must be handled, and what partial credit covers. For written: per-question expected answers with full/partial/no marks.",
   "duration_minutes": 90
 }}
 
-Set duration_minutes based on scope: 60 for introductory, 90 for intermediate, \
-120–180 for advanced topics.
 Return ONLY the JSON object. Do not include any other text before or after it.\
 """
 
@@ -102,6 +119,11 @@ Previous Attempt Results:
 - Previous mastery score: {previous_mastery_score}%
 - Identified weak areas: {weak_areas}
 
+IMPORTANT — match the retest FORMAT to the curriculum type (same rules as the original assessment):
+- CODING / IMPLEMENTATION-FOCUSED → timed coding problem targeting the weak areas.
+- CONCEPTUAL / THEORETICAL → written questions on the weak areas.
+- MIXED → 1 written question + 1 coding exercise covering the weak areas.
+
 Design a retest that:
 - Focuses primarily (70 %+) on the student's identified weak areas
 - Includes some questions on stronger areas to confirm retained knowledge
@@ -110,8 +132,8 @@ Design a retest that:
 
 Respond with a single JSON object containing exactly these fields:
 {{
-  "assessment_text": "The full retest presented to the student. Use markdown formatting. Number each question clearly.",
-  "rubric": "A detailed marking rubric for the assessor. For each question describe full marks, partial marks, and no marks.",
+  "assessment_text": "The full retest presented to the student. Use markdown formatting. For coding retests: state the problem and requirements clearly. For written retests: number each question.",
+  "rubric": "A detailed marking rubric. For coding: what a correct implementation covers, edge cases, partial credit. For written: per-question expected answers with full/partial/no marks.",
   "duration_minutes": 90
 }}
 
@@ -187,10 +209,10 @@ Return ONLY the JSON object. Do not include any other text before or after it.\
 # Maps slug → (version, body). Version is bumped when the prompt changes
 # in a way that meaningfully affects LLM behaviour.
 SEED_TEMPLATES: Final[dict[str, tuple[str, str]]] = {
-    "assessment_generation":    ("1.0", _ASSESSMENT_GENERATION),
-    "curriculum_analysis":      ("1.0", _CURRICULUM_ANALYSIS),
-    "retest_generation":        ("1.0", _RETEST_GENERATION),
-    "grading":                  ("1.0", _GRADING),
+    "assessment_generation":     ("1.1", _ASSESSMENT_GENERATION),
+    "curriculum_analysis":       ("1.0", _CURRICULUM_ANALYSIS),
+    "retest_generation":         ("1.1", _RETEST_GENERATION),
+    "grading":                   ("1.0", _GRADING),
     "reschedule_classification": ("1.0", _RESCHEDULE_CLASSIFICATION),
 }
 
@@ -207,14 +229,17 @@ REQUIRED_SLUGS: Final[frozenset[str]] = frozenset({
 # ── Seeder ────────────────────────────────────────────────────────────────────
 
 def seed_prompt_templates(db: Session) -> list[str]:
-    """Idempotently insert missing required prompt templates.
+    """Idempotently insert or update prompt templates.
 
-    For each slug in SEED_TEMPLATES, checks whether an active row already
-    exists. If not, inserts one. Never modifies existing rows.
+    - Missing templates are inserted.
+    - Existing templates whose version differs from SEED_TEMPLATES are updated
+      in-place (body + version). This lets a version bump propagate to existing
+      DBs by re-running `python -m app.db.seed`.
+    - Templates already at the current version are left untouched.
 
-    Returns the list of slugs that were newly inserted (empty if all existed).
+    Returns the list of slugs that were inserted or updated.
     """
-    inserted: list[str] = []
+    changed: list[str] = []
     for slug, (version, body) in SEED_TEMPLATES.items():
         exists = (
             db.query(PromptTemplate)
@@ -223,12 +248,16 @@ def seed_prompt_templates(db: Session) -> list[str]:
         )
         if exists is None:
             db.add(PromptTemplate(slug=slug, version=version, body=body, is_active=True))
-            inserted.append(slug)
+            changed.append(slug)
+        elif exists.version != version:
+            exists.body = body
+            exists.version = version
+            changed.append(slug)
 
-    if inserted:
+    if changed:
         db.commit()
-        logger.info("Seeded %d prompt template(s): %s", len(inserted), inserted)
-    return inserted
+        logger.info("Seeded/updated %d prompt template(s): %s", len(changed), changed)
+    return changed
 
 
 def check_missing_templates(db: Session) -> list[str]:
