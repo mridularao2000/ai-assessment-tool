@@ -138,8 +138,9 @@ def get_scheduler_service(
 
 def get_curriculum_service(
     db: Annotated[Session, Depends(get_db)],
+    scheduler_service: Annotated[SchedulerService, Depends(get_scheduler_service)],
 ) -> CurriculumService:
-    return CurriculumService(db, _llm)
+    return CurriculumService(db, _llm, scheduler_service)
 
 
 def get_assessment_service(

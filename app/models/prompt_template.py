@@ -18,6 +18,7 @@ VALID_SLUGS = frozenset(
         "retest_generation",
         "grading",
         "reschedule_classification",
+        "curriculum_analysis",   # optional enrichment in CurriculumService.create()
     }
 )
 

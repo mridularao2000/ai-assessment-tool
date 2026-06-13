@@ -1,16 +1,29 @@
 from __future__ import annotations
 
+# ── Route responsibility ───────────────────────────────────────────────────────
+#
+# This module is a thin HTTP boundary layer ONLY.
+# All orchestration (curriculum creation, assessment generation, scheduling)
+# lives in CurriculumService.create(). This route:
+#   1. Parses multipart form data
+#   2. Calls curriculum_svc.create() — the single orchestration entry point
+#   3. Maps service exceptions to HTTP status codes
+#   4. Returns the response schema
+#
+# Do NOT add assessment creation or scheduler calls here.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
 from datetime import date
 from typing import Annotated, List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
-from app.dependencies import get_assessment_service, get_curriculum_service, get_scheduler_service
+from app.dependencies import get_curriculum_service
 from app.exceptions import IngestionError, InvalidStateError, NotFoundError
+from app.interfaces.llm import LLMValidationError
 from app.schemas.curriculum import CurriculumCreateResponse, CurriculumResponse
-from app.services.assessment_service import AssessmentService
 from app.services.curriculum_service import CurriculumService
-from app.services.scheduler_service import SchedulerService
 
 router = APIRouter()
 
@@ -24,8 +37,6 @@ def create_curriculum(
     notes: Annotated[Optional[str], Form()] = None,
     files: Annotated[List[UploadFile], File()] = [],
     curriculum_svc: CurriculumService = Depends(get_curriculum_service),
-    assessment_svc: AssessmentService = Depends(get_assessment_service),
-    scheduler_svc: SchedulerService = Depends(get_scheduler_service),
 ) -> CurriculumCreateResponse:
     uploaded_files = [(f.filename or "upload", f.file.read()) for f in files]
     try:
@@ -37,17 +48,15 @@ def create_curriculum(
             notes=notes,
             uploaded_files=uploaded_files,
         )
-        assessment = assessment_svc.create_for_curriculum(curriculum.id)
-        scheduler_svc.schedule_assessment_jobs(
-            assessment_id=assessment.id,
-            scheduled_at=assessment.scheduled_at,
-            reminder_at=assessment.reminder_at,
-            due_date=assessment.due_date,
-        )
     except IngestionError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except InvalidStateError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+    except LLMValidationError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Assessment generation failed after all retries: {exc}",
+        )
 
     return CurriculumCreateResponse(curriculum_id=curriculum.id)
 
