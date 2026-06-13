@@ -5,6 +5,7 @@ from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 logging.basicConfig(
     level=logging.INFO,
@@ -57,6 +58,12 @@ app = FastAPI(
 
 _STATIC = os.path.join(os.path.dirname(__file__), "static")
 
+
+app.mount("/static", StaticFiles(directory=_STATIC), name="static")
+
+@app.get("/logo.svg", include_in_schema=False)
+def logo() -> FileResponse:
+    return FileResponse(os.path.join(_STATIC, "logo.svg"), media_type="image/svg+xml")
 
 @app.get("/", include_in_schema=False)
 def frontend() -> FileResponse:

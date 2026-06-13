@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <!-- Scalloped badge path: 12-bump wavy circle -->
+  <path fill="#5a9a3c" d="
+    M50 4
+    C54 4 56 8 60 8
+    C64 8 66 4 70 6
+    C74 8 74 13 78 16
+    C82 19 87 18 89 22
+    C92 26 90 31 92 35
+    C94 39 98 41 98 45
+    C98 49 94 51 94 55
+    C94 59 97 63 95 67
+    C93 71 88 71 86 75
+    C84 79 85 84 82 87
+    C79 90 74 89 70 91
+    C66 93 65 97 61 98
+    C57 99 54 96 50 96
+    C46 96 43 99 39 98
+    C35 97 34 93 30 91
+    C26 89 21 90 18 87
+    C15 84 16 79 14 75
+    C12 71 7 71 5 67
+    C3 63 6 59 6 55
+    C6 51 2 49 2 45
+    C2 41 6 39 8 35
+    C10 31 8 26 11 22
+    C13 18 18 19 22 16
+    C26 13 26 8 30 6
+    C34 4 36 8 40 8
+    C44 8 46 4 50 4Z
+  "/>
+  <!-- White checkmark -->
+  <polyline
+    points="28,50 42,65 72,35"
+    fill="none"
+    stroke="white"
+    stroke-width="9"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+</svg>
