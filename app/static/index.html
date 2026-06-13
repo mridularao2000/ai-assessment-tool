@@ -55,10 +55,9 @@
     <p class="text-muted mb-2">Developer control panel</p>
     <div class="alert alert-info alert-sm py-2 small mb-0">
       <strong>Workflow:</strong>
-      Create Curriculum (→ assessment auto-generated &amp; emailed) →
-      Get Assessment with ID + token from email →
-      Submit Answer → Get Results.
-      For reschedule, use the same assessment ID + token.
+      Create Curriculum → assessment is auto-generated &amp; emailed on the scheduled date →
+      open the email link to pre-fill your ID &amp; token → Submit Answer → Get Results.
+      Use Reschedule if you need to delay the assessment date.
     </div>
   </div>
 
@@ -123,50 +122,24 @@
     </div>
   </div>
 
-  <!-- ── 2. Get Assessment ────────────────────────────────────────────────── -->
+  <!-- ── 2. Submit Answer ─────────────────────────────────────────────────── -->
   <div class="card mb-4 shadow-sm border-0">
     <div class="card-body p-4">
-      <h5 class="card-title mb-1"><span class="section-badge">2</span>Get Assessment</h5>
+      <h5 class="card-title mb-3"><span class="section-badge">2</span>Submit Answer</h5>
       <p class="text-muted small mb-3">
-        The assessment ID and token arrive in your scheduled email.
-        During local testing you can find the token in the <code>assessment</code> table
-        (<code>submission_token</code> column).
+        On assessment day you'll receive an email with your questions and a link.
+        Opening that link pre-fills the Assessment ID and Token below automatically.
       </p>
-
-      <div class="mb-3">
-        <label class="form-label" for="a_id">Assessment ID</label>
-        <input type="text" class="form-control font-monospace" id="a_id" placeholder="UUID">
-      </div>
-
-      <div class="mb-3">
-        <label class="form-label" for="a_token">Token</label>
-        <input type="text" class="form-control font-monospace" id="a_token"
-               placeholder="HMAC token from email link">
-      </div>
-
-      <button class="btn btn-primary"
-              id="assessmentBtn" data-label="Get Assessment"
-              onclick="getAssessment()">
-        Get Assessment
-      </button>
-      <div id="assessmentResult" class="response-box"></div>
-    </div>
-  </div>
-
-  <!-- ── 3. Submit Answer ─────────────────────────────────────────────────── -->
-  <div class="card mb-4 shadow-sm border-0">
-    <div class="card-body p-4">
-      <h5 class="card-title mb-3"><span class="section-badge">3</span>Submit Answer</h5>
       <form id="submissionForm" novalidate>
 
         <div class="row g-3 mb-3">
           <div class="col-sm-7">
             <label class="form-label" for="s_id">Assessment ID</label>
-            <input type="text" class="form-control font-monospace" id="s_id" placeholder="UUID">
+            <input type="text" class="form-control font-monospace" id="s_id" placeholder="UUID — pre-filled from email link">
           </div>
           <div class="col-sm-5">
             <label class="form-label" for="s_token">Token</label>
-            <input type="text" class="form-control font-monospace" id="s_token" placeholder="Token">
+            <input type="text" class="form-control font-monospace" id="s_token" placeholder="Pre-filled from email link">
           </div>
         </div>
 
@@ -205,18 +178,19 @@
     </div>
   </div>
 
-  <!-- ── 4. Get Results ──────────────────────────────────────────────────── -->
+  <!-- ── 3. Get Results ──────────────────────────────────────────────────── -->
   <div class="card mb-4 shadow-sm border-0">
     <div class="card-body p-4">
-      <h5 class="card-title mb-1"><span class="section-badge">4</span>Get Results</h5>
+      <h5 class="card-title mb-1"><span class="section-badge">3</span>Get Results</h5>
       <p class="text-muted small mb-3">
-        Grading runs asynchronously after submission. If you get a 404, wait a moment and retry.
+        Grading runs in the background after submission — you'll also receive a results email.
+        The Submission ID is auto-filled after a successful submission above.
       </p>
 
       <div class="mb-3">
         <label class="form-label" for="r_id">Submission ID</label>
         <input type="text" class="form-control font-monospace" id="r_id"
-               placeholder="UUID — auto-filled after a successful submission above">
+               placeholder="UUID — auto-filled after submission">
       </div>
 
       <button class="btn btn-primary"
@@ -228,24 +202,25 @@
     </div>
   </div>
 
-  <!-- ── 5. Reschedule ───────────────────────────────────────────────────── -->
+  <!-- ── 4. Reschedule ───────────────────────────────────────────────────── -->
   <div class="card mb-4 shadow-sm border-0">
     <div class="card-body p-4">
-      <h5 class="card-title mb-1"><span class="section-badge">5</span>Reschedule Assessment</h5>
+      <h5 class="card-title mb-1"><span class="section-badge">4</span>Reschedule Assessment</h5>
       <p class="text-muted small mb-3">
-        Only active or scheduled assessments can be rescheduled.
-        The reason is classified by Claude — medical, interview, and emergency requests
+        Only scheduled or active assessments can be rescheduled.
+        The reason is classified by AI — medical, interview, and emergency requests
         are approved; procrastination and lack-of-preparation are denied.
+        Assessment ID and Token are pre-filled from the email link.
       </p>
 
       <div class="row g-3 mb-3">
         <div class="col-sm-7">
           <label class="form-label" for="re_id">Assessment ID</label>
-          <input type="text" class="form-control font-monospace" id="re_id" placeholder="UUID">
+          <input type="text" class="form-control font-monospace" id="re_id" placeholder="UUID — pre-filled from email link">
         </div>
         <div class="col-sm-5">
           <label class="form-label" for="re_token">Token</label>
-          <input type="text" class="form-control font-monospace" id="re_token" placeholder="Token">
+          <input type="text" class="form-control font-monospace" id="re_token" placeholder="Pre-filled from email link">
         </div>
       </div>
 
@@ -276,14 +251,16 @@
 'use strict';
 
 // ── URL param pre-fill (email deep links) ────────────────────────────────────
+// Assessment emails link to: {APP_BASE_URL}?assessment_id=...&token=...
+// Pre-fills Submit Answer and Reschedule fields, then scrolls to Submit.
 document.addEventListener('DOMContentLoaded', () => {
   const p = new URLSearchParams(window.location.search);
   const aid   = p.get('assessment_id');
   const token = p.get('token');
   if (aid && token) {
-    ['a_id', 's_id', 're_id'].forEach(id => document.getElementById(id).value = aid);
-    ['a_token', 's_token', 're_token'].forEach(id => document.getElementById(id).value = token);
-    document.getElementById('assessmentBtn').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    ['s_id', 're_id'].forEach(id => document.getElementById(id).value = aid);
+    ['s_token', 're_token'].forEach(id => document.getElementById(id).value = token);
+    document.getElementById('submissionBtn').scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
 });
 
@@ -294,8 +271,6 @@ function setLoading(btn, on) {
   btn.textContent = on ? '⟳ Working…' : btn.dataset.label;
 }
 
-// Hides the result box and wipes its content — call at the top of every handler
-// so a previous error disappears the moment the user clicks again.
 function clearResult(id) {
   const el = document.getElementById(id);
   el.innerHTML = '';
@@ -311,9 +286,6 @@ function showResult(id, data, isError) {
   el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
-// Renders an ordered step list inside the result box.
-// Steps before activeIndex are shown as done (✓), the active step spins (⟳),
-// later steps are dimmed (○). Uses innerHTML — step labels are always hardcoded.
 function showProgress(id, steps, activeIndex) {
   const el = document.getElementById(id);
   el.innerHTML = steps.map((step, i) => {
@@ -340,8 +312,6 @@ async function api(url, opts = {}) {
 }
 
 // ── 1. Create Curriculum ─────────────────────────────────────────────────────
-// Pipeline: ingest resources → LLM curriculum analysis → LLM assessment generation → schedule jobs
-// Advance steps on a timer so the user sees where we are; cancel timers on API return.
 
 const CURRICULUM_STEPS = [
   'Ingesting resources (URLs, files, notes)',
@@ -357,8 +327,6 @@ document.getElementById('curriculumForm').addEventListener('submit', async (e) =
   setLoading(btn, true);
   showProgress('curriculumResult', CURRICULUM_STEPS, 0);
 
-  // Advance to step 1 after ~4 s (resource ingestion done, LLM analysis starts)
-  // Advance to step 2 after ~13 s (analysis done, assessment generation starts)
   const timers = [
     setTimeout(() => showProgress('curriculumResult', CURRICULUM_STEPS, 1), 4000),
     setTimeout(() => showProgress('curriculumResult', CURRICULUM_STEPS, 2), 13000),
@@ -388,38 +356,7 @@ document.getElementById('curriculumForm').addEventListener('submit', async (e) =
   setLoading(btn, false);
 });
 
-// ── 2. Get Assessment ────────────────────────────────────────────────────────
-
-async function getAssessment() {
-  const btn = document.getElementById('assessmentBtn');
-  clearResult('assessmentResult');
-
-  const id    = document.getElementById('a_id').value.trim();
-  const token = document.getElementById('a_token').value.trim();
-
-  if (!id || !token) {
-    showResult('assessmentResult', 'Both Assessment ID and Token are required.', true);
-    return;
-  }
-
-  setLoading(btn, true);
-  showProgress('assessmentResult', ['Fetching assessment'], 0);
-
-  const url = `/api/v1/assessments/${encodeURIComponent(id)}?token=${encodeURIComponent(token)}`;
-  const { ok, data } = await api(url);
-  showResult('assessmentResult', data, !ok);
-
-  if (ok) {
-    document.getElementById('s_id').value     = id;
-    document.getElementById('s_token').value  = token;
-    document.getElementById('re_id').value    = id;
-    document.getElementById('re_token').value = token;
-  }
-
-  setLoading(btn, false);
-}
-
-// ── 3. Submit Answer ─────────────────────────────────────────────────────────
+// ── 2. Submit Answer ─────────────────────────────────────────────────────────
 
 function toggleSubmissionType() {
   const type = document.getElementById('s_type').value;
@@ -468,7 +405,7 @@ document.getElementById('submissionForm').addEventListener('submit', async (e) =
   setLoading(btn, false);
 });
 
-// ── 4. Get Results ───────────────────────────────────────────────────────────
+// ── 3. Get Results ───────────────────────────────────────────────────────────
 
 async function getResults() {
   const btn = document.getElementById('resultsBtn');
@@ -488,8 +425,7 @@ async function getResults() {
   setLoading(btn, false);
 }
 
-// ── 5. Reschedule ────────────────────────────────────────────────────────────
-// Pipeline: LLM classifies the reason → reschedule decision applied
+// ── 4. Reschedule ────────────────────────────────────────────────────────────
 
 const RESCHEDULE_STEPS = [
   'Classifying reason with AI',
