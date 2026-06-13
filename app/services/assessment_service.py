@@ -91,32 +91,34 @@ class AssessmentService:
 
     # ── Public methods ─────────────────────────────────────────────────────────
 
-    def create_for_curriculum(self, curriculum_id: str) -> Assessment:
-        """Generate a first-attempt assessment and persist it.
+    def create_for_curriculum(self, curriculum: Curriculum) -> Assessment:
+        """Build a first-attempt Assessment ORM object. Pure factory — no DB writes.
+
+        Accepts the Curriculum ORM object directly so it works on pending
+        (unflushed) curricula; Session.get() would miss them because it only
+        searches the identity map (persistent rows).
+
+        Does NOT call db.add(), db.commit(), or db.refresh().
+        CurriculumService.create() owns the session and is the sole
+        transaction boundary for the curriculum-creation pipeline.
 
         Steps:
-          1. Load Curriculum by curriculum_id; verify status == ready.
+          1. Verify curriculum.status == ready.
           2. Fetch the active PromptTemplate where slug='assessment_generation'.
-          3. Call llm.generate_assessment() with topic, extracted_content, and
-             prompt_template_body → AssessmentGenerationResult.
-          4. Call _calculate_scheduled_at(target_completion_date).
-          5. Compute reminder_at and due_date from scheduled_at.
-          6. Pre-generate assessment ID; derive submission_token from it.
-          7. Persist Assessment with attempt_number=1, status=scheduled.
-          8. Return the Assessment.
-             Caller must pass it to SchedulerService.schedule_assessment_jobs().
+          3. Call llm.generate_assessment() → AssessmentGenerationResult.
+          4. Compute scheduled_at, reminder_at, due_date.
+          5. Pre-generate assessment ID; derive submission_token from it.
+          6. Construct and return Assessment with status=scheduled.
+             Caller adds it to the session and commits.
 
         Raises:
-            NotFoundError: if curriculum_id does not exist or prompt template missing.
-            InvalidStateError: if Curriculum.status is not ready.
+            InvalidStateError: if curriculum.status is not ready.
+            NotFoundError: if the prompt template is missing.
             LLMValidationError: if generation fails after all retries.
         """
-        curriculum = self.db.get(Curriculum, curriculum_id)
-        if curriculum is None:
-            raise NotFoundError(f"Curriculum {curriculum_id!r} not found.")
         if curriculum.status != CurriculumStatus.ready:
             raise InvalidStateError(
-                f"Curriculum {curriculum_id!r} is not ready "
+                f"Curriculum {curriculum.id!r} is not ready "
                 f"(status: {curriculum.status.value!r})."
             )
 
@@ -134,9 +136,9 @@ class AssessmentService:
         reminder_at, due_date = self._build_dates(scheduled_at)
 
         assessment_id = str(uuid.uuid4())
-        assessment = Assessment(
+        return Assessment(
             id=assessment_id,
-            curriculum_id=curriculum_id,
+            curriculum_id=curriculum.id,
             attempt_number=1,
             assessment_text=result.assessment_text,
             rubric=result.rubric,
@@ -148,11 +150,6 @@ class AssessmentService:
             status=AssessmentStatus.scheduled,
             submission_token=generate_submission_token(assessment_id),
         )
-        self.db.add(assessment)
-        self.db.commit()
-        self.db.refresh(assessment)
-
-        return assessment
 
     def create_retest(
         self,

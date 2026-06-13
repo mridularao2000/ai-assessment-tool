@@ -183,24 +183,38 @@ class CurriculumService:
 
         curriculum.status = CurriculumStatus.ready
 
-        # ── 4. Create assessment (single atomic commit) ────────────────────────
-        # AssessmentService.create_for_curriculum() finds the curriculum via
-        # the session's identity map (no flush needed — UUID is Python-generated),
-        # generates the assessment via LLM, and calls db.commit() once, which
-        # atomically writes curriculum + resources + assessment together.
+        # ── 4. Build assessment (pure factory — no DB side effects) ───────────────
+        # create_for_curriculum() returns an Assessment ORM object with all
+        # fields set but NOT yet added to the session or committed.
         assessment = AssessmentService(self.db, self.llm).create_for_curriculum(
-            curriculum.id
+            curriculum
         )
+        self.db.add(assessment)
 
-        # ── 5. Schedule APScheduler jobs ───────────────────────────────────────
-        self._scheduler.schedule_assessment_jobs(
-            assessment_id=assessment.id,
-            scheduled_at=assessment.scheduled_at,
-            reminder_at=assessment.reminder_at,
-            due_date=assessment.due_date,
-        )
+        # Capture scheduling fields now — db.commit() below expires all
+        # attributes on session-tracked objects, so reading them afterwards
+        # would trigger lazy SELECTs that are unnecessary.
+        assessment_id = assessment.id
+        scheduled_at = assessment.scheduled_at
+        reminder_at = assessment.reminder_at
+        due_date = assessment.due_date
 
+        # ── 5. Single commit: curriculum + resources + assessment ──────────────
+        # This is the ONLY db.commit() in the creation pipeline.
+        # If assessment generation (step 4) raised, nothing is committed.
+        self.db.commit()
         self.db.refresh(curriculum)
+
+        # ── 6. Schedule APScheduler jobs ───────────────────────────────────────
+        # Called after commit so SchedulerService.schedule_assessment_jobs()
+        # can find the assessment row via db.get() when it persists job IDs.
+        self._scheduler.schedule_assessment_jobs(
+            assessment_id=assessment_id,
+            scheduled_at=scheduled_at,
+            reminder_at=reminder_at,
+            due_date=due_date,
+        )
+
         return curriculum
 
     def get(self, curriculum_id: str) -> Curriculum:
