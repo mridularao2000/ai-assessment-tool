@@ -45,6 +45,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     finally:
         db.close()
 
+    from app.config import get_settings
+    _settings = get_settings()
+    if "localhost" in _settings.app_base_url:
+        logging.getLogger(__name__).warning(
+            "APP_BASE_URL is set to %r which contains 'localhost'. "
+            "Assessment emails will contain broken links in production. "
+            "Set APP_BASE_URL=https://<your-render-app>.onrender.com in the Render dashboard.",
+            _settings.app_base_url,
+        )
+
     get_scheduler_adapter().start()
     yield
     get_scheduler_adapter().shutdown()

@@ -35,10 +35,12 @@ services:
       - key: RESEND_FROM_NAME
         value: AI Assessment System
 
-      # Set to your actual Render service URL once deployed, e.g.:
-      #   https://ai-assessment.onrender.com
+      # REQUIRED: set this to your Render service URL.
+      # Assessment and reminder emails embed this as the submission link.
+      # Wrong value → broken links in every email.
+      # Find it at: Render dashboard → your service → Settings → URL
       - key: APP_BASE_URL
-        sync: false
+        value: https://REPLACE-WITH-YOUR-RENDER-URL.onrender.com
 
       - key: USER_EMAIL
         sync: false          # Email address that receives all assessments and results.

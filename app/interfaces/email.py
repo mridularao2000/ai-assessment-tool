@@ -36,13 +36,17 @@ class AssessmentEmailData:
 
 @dataclass
 class ReminderEmailData:
-    """Data required to send the 24-hour reminder email."""
+    """Data required to send the pre-assessment reminder email.
+
+    The reminder fires 1 day before the assessment email is sent.
+    It does NOT include a submission link — that is in the assessment email.
+    """
 
     recipient_email: str
-    assessment_id: str
     topic: str
-    due_date: datetime
-    submission_link: str
+    scheduled_at: datetime   # when the assessment email will be delivered
+    expire_date: datetime    # submission deadline; assessment expires after this
+    key_topics: list[str]    # parsed from curriculum analysis; may be empty
 
 
 @dataclass

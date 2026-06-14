@@ -104,7 +104,7 @@ class APSchedulerAdapter:
         self._scheduler.add_job(
             expire_assessment_job,
             trigger="date",
-            run_date=due_date + timedelta(days=2),
+            run_date=due_date,
             id=expire_id,
             args=[assessment_id],
             replace_existing=True,
