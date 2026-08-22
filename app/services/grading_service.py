@@ -37,7 +37,7 @@ class GradingService:
 
         Steps:
           1. Load Submission with its Assessment and the Assessment's Curriculum.
-             Verify Assessment.status == submitted.
+             Verify Assessment.status is submitted or late_submitted.
           2. Resolve submission_content from Submission.submission_type:
                github_url → github_ingestor.fetch_repo_content(submission.github_url)
                text       → submission.text_content (used directly)
@@ -54,7 +54,7 @@ class GradingService:
 
         Raises:
             NotFoundError: if submission_id does not exist.
-            InvalidStateError: if Assessment.status is not submitted.
+            InvalidStateError: if Assessment.status is not submitted or late_submitted.
             IngestionError: if a github_url or file cannot be fetched.
             LLMValidationError: if grading fails after all retries.
         """
@@ -71,7 +71,10 @@ class GradingService:
             raise NotFoundError(f"Submission {submission_id!r} not found.")
 
         assessment = submission.assessment
-        if assessment.status != AssessmentStatus.submitted:
+        if assessment.status not in (
+            AssessmentStatus.submitted,
+            AssessmentStatus.late_submitted,
+        ):
             raise InvalidStateError(
                 f"Assessment {assessment.id!r} is not in submitted state "
                 f"(current: {assessment.status.value!r})."

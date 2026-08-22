@@ -57,8 +57,8 @@ class ResendEmailAdapter:
       <td style="padding:6px 12px">{_e(_fmt_dt(data.scheduled_at))}</td>
     </tr>
     <tr>
-      <td style="padding:6px 12px;background:#f8f9fa;font-weight:600">Due</td>
-      <td style="padding:6px 12px"><strong>{_e(_fmt_dt(data.due_date))}</strong></td>
+      <td style="padding:6px 12px;background:#f8f9fa;font-weight:600">Expires</td>
+      <td style="padding:6px 12px;color:#dc3545"><strong>{_e(_fmt_dt(data.due_date))}</strong></td>
     </tr>
     <tr>
       <td style="padding:6px 12px;background:#f8f9fa;font-weight:600">Duration</td>
@@ -89,32 +89,40 @@ class ResendEmailAdapter:
         self._send(data.recipient_email, f"Your {data.topic} Assessment is Ready", body)
 
     def send_reminder_email(self, data: ReminderEmailData) -> None:
+        topics_section = ""
+        if data.key_topics:
+            items = "".join(
+                f'<li style="padding:3px 0">{_e(t)}</li>' for t in data.key_topics
+            )
+            topics_section = f"""
+  <h3 style="margin-bottom:8px">Concepts to review</h3>
+  <ul style="margin:0 0 20px 0;padding-left:20px;line-height:1.8;
+             background:#f8f9fa;padding:12px 12px 12px 32px;border-radius:4px">
+    {items}
+  </ul>"""
+
         body = f"""
 <div style="font-family:sans-serif;color:#212529;max-width:620px;margin:0 auto;padding:24px">
-  <h2 style="color:#fd7e14;margin-top:0">⏰ Reminder: {_e(data.topic)} Due Soon</h2>
-  <p>Your assessment submission deadline is approaching.</p>
-
+  <h2 style="color:#fd7e14;margin-top:0">⏰ Assessment Reminder: {_e(data.topic)}</h2>
+  <p>Your assessment is scheduled for tomorrow. Use today to review the concepts below.</p>
+  {topics_section}
   <table style="width:100%;border-collapse:collapse;margin:16px 0">
     <tr>
-      <td style="padding:6px 12px;background:#fff3cd;font-weight:600;width:40%">Due</td>
-      <td style="padding:6px 12px"><strong>{_e(_fmt_dt(data.due_date))}</strong></td>
+      <td style="padding:8px 12px;background:#fff3cd;font-weight:600;width:42%">Assessment sent</td>
+      <td style="padding:8px 12px"><strong>{_e(_fmt_dt(data.scheduled_at))}</strong></td>
+    </tr>
+    <tr>
+      <td style="padding:8px 12px;background:#fff3cd;font-weight:600">Expires</td>
+      <td style="padding:8px 12px;color:#dc3545"><strong>{_e(_fmt_dt(data.expire_date))}</strong></td>
     </tr>
   </table>
 
-  <p style="text-align:center;margin:28px 0">
-    <a href="{_e(data.submission_link)}"
-       style="background:#fd7e14;color:#fff;padding:14px 28px;text-decoration:none;
-              border-radius:6px;font-weight:600;display:inline-block">
-      Submit Now →
-    </a>
-  </p>
-
-  <hr style="border:none;border-top:1px solid #dee2e6;margin:24px 0">
-  <p style="color:#6c757d;font-size:0.82rem">
-    If you have already submitted, disregard this reminder.
+  <p style="color:#6c757d;font-size:0.85rem;margin-top:20px">
+    The assessment questions and submission link will arrive in a separate email
+    at the time shown above.
   </p>
 </div>"""
-        self._send(data.recipient_email, f"Reminder: {data.topic} Assessment Due Soon", body)
+        self._send(data.recipient_email, f"Reminder: {data.topic} Assessment Tomorrow", body)
 
     def send_results_email(self, data: ResultsEmailData) -> None:
         passed_color = "#198754" if data.passed else "#dc3545"

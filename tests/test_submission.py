@@ -16,7 +16,9 @@ import io
 import pytest
 
 from app.models.assessment import Assessment, AssessmentStatus
+from app.models.late_submission_token import LateSubmissionTokenBalance
 from app.models.submission import Submission, SubmissionType
+from app.services.late_token_service import LateTokenService
 from tests.conftest import (
     FakeScheduler,
     make_assessment,
@@ -285,3 +287,110 @@ class TestGetSubmission:
         submission_id = r.json()["submission_id"]
 
         assert submission_id in fake_scheduler.schedule_grade_job_calls
+
+
+class TestLateSubmissionTokens:
+
+    def test_expired_with_token_returns_201(self, client, db):
+        curriculum = make_curriculum(db)
+        assessment, token = make_assessment(db, curriculum, status=AssessmentStatus.expired)
+        db.add(LateSubmissionTokenBalance(id=1, balance=2))
+        db.commit()
+
+        response = client.post("/api/v1/submissions/", data={
+            "assessment_id": assessment.id,
+            "token": token,
+            "submission_type": "text",
+            "text_content": VALID_TEXT,
+        })
+
+        assert response.status_code == 201
+
+    def test_expired_with_token_spends_one_token_and_marks_late(self, client, db):
+        curriculum = make_curriculum(db)
+        assessment, token = make_assessment(db, curriculum, status=AssessmentStatus.expired)
+        db.add(LateSubmissionTokenBalance(id=1, balance=2))
+        db.commit()
+
+        client.post("/api/v1/submissions/", data={
+            "assessment_id": assessment.id,
+            "token": token,
+            "submission_type": "text",
+            "text_content": VALID_TEXT,
+        })
+
+        db.expire_all()
+        refreshed = db.get(Assessment, assessment.id)
+        assert refreshed.status == AssessmentStatus.late_submitted
+        assert db.get(LateSubmissionTokenBalance, 1).balance == 1
+
+    def test_expired_without_token_still_returns_409(self, client, db):
+        curriculum = make_curriculum(db)
+        assessment, token = make_assessment(db, curriculum, status=AssessmentStatus.expired)
+
+        response = client.post("/api/v1/submissions/", data={
+            "assessment_id": assessment.id,
+            "token": token,
+            "submission_type": "text",
+            "text_content": VALID_TEXT,
+        })
+
+        assert response.status_code == 409
+
+    def test_expired_with_zero_balance_returns_409_and_does_not_spend(self, client, db):
+        curriculum = make_curriculum(db)
+        assessment, token = make_assessment(db, curriculum, status=AssessmentStatus.expired)
+        db.add(LateSubmissionTokenBalance(id=1, balance=0))
+        db.commit()
+
+        response = client.post("/api/v1/submissions/", data={
+            "assessment_id": assessment.id,
+            "token": token,
+            "submission_type": "text",
+            "text_content": VALID_TEXT,
+        })
+
+        assert response.status_code == 409
+        assert db.get(LateSubmissionTokenBalance, 1).balance == 0
+
+    def test_balance_endpoint_returns_current_balance(self, client, db):
+        db.add(LateSubmissionTokenBalance(id=1, balance=1))
+        db.commit()
+
+        response = client.get("/api/v1/late-tokens/")
+
+        assert response.status_code == 200
+        assert response.json()["balance"] == 1
+
+    def test_balance_endpoint_returns_zero_when_no_row_exists(self, client, db):
+        response = client.get("/api/v1/late-tokens/")
+
+        assert response.status_code == 200
+        assert response.json()["balance"] == 0
+
+
+class TestLateTokenService:
+
+    def test_grant_monthly_from_zero_tops_up_to_two(self, db):
+        service = LateTokenService(db)
+
+        balance = service.grant_monthly()
+
+        assert balance == 2
+
+    def test_grant_monthly_caps_at_two_when_already_at_one(self, db):
+        db.add(LateSubmissionTokenBalance(id=1, balance=1))
+        db.commit()
+        service = LateTokenService(db)
+
+        balance = service.grant_monthly()
+
+        assert balance == 2
+
+    def test_spend_with_zero_balance_raises(self, db):
+        from app.exceptions import InvalidStateError
+
+        service = LateTokenService(db)
+
+        with pytest.raises(InvalidStateError):
+            service.spend()

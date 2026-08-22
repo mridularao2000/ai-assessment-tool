@@ -130,6 +130,18 @@
         On assessment day you'll receive an email with your questions and a link.
         Opening that link pre-fills the Assessment ID and Token below automatically.
       </p>
+
+      <div class="d-flex align-items-center justify-content-between mb-3 p-2 rounded" style="background:#f8f9fa;">
+        <div class="small">
+          <span class="fw-semibold">Late-submission tokens:</span>
+          <span id="tokenBalance" class="font-monospace">—</span>
+        </div>
+        <button type="button" class="btn btn-outline-secondary btn-sm"
+                id="tokenCheckBtn" data-label="Check Tokens" onclick="checkLateTokens()">
+          Check Tokens
+        </button>
+      </div>
+
       <form id="submissionForm" novalidate>
 
         <div class="row g-3 mb-3">
@@ -357,6 +369,24 @@ document.getElementById('curriculumForm').addEventListener('submit', async (e) =
 });
 
 // ── 2. Submit Answer ─────────────────────────────────────────────────────────
+
+async function checkLateTokens() {
+  const btn   = document.getElementById('tokenCheckBtn');
+  const badge = document.getElementById('tokenBalance');
+
+  setLoading(btn, true);
+  const { ok, data } = await api('/api/v1/late-tokens/');
+  setLoading(btn, false);
+
+  if (ok && typeof data.balance === 'number') {
+    badge.textContent = `${data.balance} available`;
+    btn.disabled = data.balance <= 0;
+  } else {
+    badge.textContent = 'unavailable';
+  }
+}
+
+document.addEventListener('DOMContentLoaded', checkLateTokens);
 
 function toggleSubmissionType() {
   const type = document.getElementById('s_type').value;

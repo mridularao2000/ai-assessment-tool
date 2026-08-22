@@ -48,6 +48,17 @@ class EmailService:
             ),
         ))
 
+    @staticmethod
+    def _parse_key_topics(extracted_content: str | None) -> list[str]:
+        """Extract the Key Topics line written by the curriculum analysis step."""
+        if not extracted_content:
+            return []
+        for line in extracted_content.splitlines():
+            if line.startswith("Key Topics:"):
+                raw = line[len("Key Topics:"):].strip()
+                return [t.strip() for t in raw.split(",") if t.strip()]
+        return []
+
     def send_reminder_email(self, assessment_id: str) -> None:
         assessment = (
             self.db.query(Assessment)
@@ -60,12 +71,10 @@ class EmailService:
 
         self.email.send_reminder_email(ReminderEmailData(
             recipient_email=get_settings().user_email,
-            assessment_id=assessment_id,
             topic=assessment.curriculum.topic,
-            due_date=assessment.due_date,
-            submission_link=self._submission_link(
-                assessment_id, assessment.submission_token
-            ),
+            scheduled_at=assessment.scheduled_at,
+            expire_date=assessment.due_date,
+            key_topics=self._parse_key_topics(assessment.curriculum.extracted_content),
         ))
 
     def send_results_email(self, submission_id: str) -> None:

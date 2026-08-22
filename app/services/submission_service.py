@@ -11,24 +11,33 @@ from app.exceptions import InvalidStateError, InvalidTokenError, NotFoundError
 from app.interfaces.scheduler import SchedulerInterface
 from app.models.assessment import Assessment, AssessmentStatus
 from app.models.submission import Submission, SubmissionType
+from app.services.late_token_service import LateTokenService
 from app.utils import token_auth
 
 
 class SubmissionService:
-    """Accepts and persists submissions for active assessments.
+    """Accepts and persists submissions for active (or token-covered expired)
+    assessments.
 
     Depends on:
-      db                — SQLAlchemy session for all persistence
-      scheduler_service — SchedulerInterface to trigger grade job
+      db                 — SQLAlchemy session for all persistence
+      scheduler_service   — SchedulerInterface to trigger grade job
+      late_token_service — LateTokenService to check/spend late-submission tokens
 
     Does NOT grade, email, or call the LLM.
     The grade job is scheduled after the Submission row is committed so that
     a scheduler failure does not roll back the submission record.
     """
 
-    def __init__(self, db: Session, scheduler_service: SchedulerInterface) -> None:
+    def __init__(
+        self,
+        db: Session,
+        scheduler_service: SchedulerInterface,
+        late_token_service: LateTokenService,
+    ) -> None:
         self.db = db
         self.scheduler_service = scheduler_service
+        self.late_token_service = late_token_service
 
     # ── Public methods ─────────────────────────────────────────────────────────
 
@@ -48,13 +57,14 @@ class SubmissionService:
              Raise NotFoundError if missing.
           2. Verify token via token_auth.verify_submission_token.
              Raise InvalidTokenError if verification fails.
-          3. Verify Assessment.status == active.
-             Raise InvalidStateError otherwise.
+          3. Verify Assessment.status == active, OR status == expired with a
+             late-submission token available (spends one token and marks the
+             submission late). Raise InvalidStateError otherwise.
           4. Resolve file_path for submission_type == file:
                - Resolve settings.uploads_dir, create directory if absent.
                - Write bytes under <uploads_dir>/<uuid>_<original_filename>.
           5. Create and flush the Submission row.
-          6. Transition Assessment.status → submitted.
+          6. Transition Assessment.status → submitted (or late_submitted).
           7. Commit.
           8. Call scheduler_service.schedule_grade_job(submission.id).
              Scheduler failure is NOT rolled back — submission is already committed.
@@ -63,8 +73,9 @@ class SubmissionService:
         Raises:
             NotFoundError: if assessment_id does not exist.
             InvalidTokenError: if the token does not match.
-            InvalidStateError: if Assessment.status is not active, or a
-                               submission already exists for this assessment.
+            InvalidStateError: if Assessment.status is not active (and not an
+                               expired assessment with a token available), or
+                               a submission already exists for this assessment.
         """
         assessment = self.db.get(Assessment, assessment_id)
         if assessment is None:
@@ -73,7 +84,15 @@ class SubmissionService:
         if not token_auth.verify_submission_token(assessment_id, token):
             raise InvalidTokenError(f"Invalid token for assessment {assessment_id!r}.")
 
-        if assessment.status != AssessmentStatus.active:
+        is_late = False
+        if assessment.status == AssessmentStatus.expired:
+            if self.late_token_service.get_balance() <= 0:
+                raise InvalidStateError(
+                    f"Assessment {assessment_id!r} has expired and no "
+                    "late-submission tokens are available."
+                )
+            is_late = True
+        elif assessment.status != AssessmentStatus.active:
             raise InvalidStateError(
                 f"Assessment {assessment_id!r} is not active "
                 f"(current status: {assessment.status.value!r})."
@@ -98,7 +117,11 @@ class SubmissionService:
         self.db.add(submission)
         self.db.flush()  # populate submission.id before status transition
 
-        assessment.status = AssessmentStatus.submitted
+        if is_late:
+            self.late_token_service.spend()
+            assessment.status = AssessmentStatus.late_submitted
+        else:
+            assessment.status = AssessmentStatus.submitted
         self.db.commit()
         self.db.refresh(submission)
 

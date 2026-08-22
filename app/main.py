@@ -19,6 +19,7 @@ from app.api.v1 import (
     curriculum,
     grading,
     health,
+    late_tokens,
     reschedule,
     submission,
 )
@@ -44,6 +45,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             )
     finally:
         db.close()
+
+    from app.config import get_settings
+    _settings = get_settings()
+    if "localhost" in _settings.app_base_url:
+        logging.getLogger(__name__).warning(
+            "APP_BASE_URL is set to %r which contains 'localhost'. "
+            "Assessment emails will contain broken links in production. "
+            "Set APP_BASE_URL=https://<your-render-app>.onrender.com in the Render dashboard.",
+            _settings.app_base_url,
+        )
 
     get_scheduler_adapter().start()
     yield
@@ -75,4 +86,5 @@ app.include_router(assessment.router, prefix="/api/v1/assessments", tags=["asses
 app.include_router(submission.router, prefix="/api/v1/submissions", tags=["submissions"])
 app.include_router(grading.router, prefix="/api/v1/submissions", tags=["grading"])
 app.include_router(reschedule.router, prefix="/api/v1/assessments", tags=["reschedule"])
+app.include_router(late_tokens.router, prefix="/api/v1/late-tokens", tags=["late-tokens"])
 app.include_router(health.router, prefix="/health", tags=["health"])

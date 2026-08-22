@@ -51,6 +51,25 @@ class APSchedulerAdapter:
         """Start the scheduler. Idempotent — safe to call more than once."""
         if not self._scheduler.running:
             self._scheduler.start()
+        self._schedule_monthly_token_grant()
+
+    def _schedule_monthly_token_grant(self) -> None:
+        """Register the recurring monthly late-submission token grant.
+
+        Fixed job ID + replace_existing=True keeps this idempotent across
+        restarts, since jobs persist in the SQLAlchemyJobStore.
+        """
+        from app.jobs.grant_late_tokens_job import grant_late_tokens_job
+
+        self._scheduler.add_job(
+            grant_late_tokens_job,
+            trigger="cron",
+            day=1,
+            hour=0,
+            minute=0,
+            id="grant_late_tokens_monthly",
+            replace_existing=True,
+        )
 
     def shutdown(self) -> None:
         """Gracefully stop the scheduler, letting in-progress jobs finish."""
@@ -104,7 +123,7 @@ class APSchedulerAdapter:
         self._scheduler.add_job(
             expire_assessment_job,
             trigger="date",
-            run_date=due_date + timedelta(days=2),
+            run_date=due_date,
             id=expire_id,
             args=[assessment_id],
             replace_existing=True,

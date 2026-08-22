@@ -20,6 +20,7 @@ class AssessmentStatus(str, enum.Enum):
     scheduled = "scheduled"   # created, email job queued, not yet sent
     active = "active"         # assessment email sent, awaiting submission
     submitted = "submitted"   # submission received, grading pending
+    late_submitted = "late_submitted"  # submitted after due_date using a late token
     completed = "completed"   # graded
     expired = "expired"       # due_date passed with no submission
 

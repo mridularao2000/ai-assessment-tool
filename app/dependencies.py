@@ -47,6 +47,7 @@ from app.interfaces.llm import (
 from app.services.assessment_service import AssessmentService
 from app.services.curriculum_service import CurriculumService
 from app.services.grading_service import GradingService
+from app.services.late_token_service import LateTokenService
 from app.services.reschedule_service import RescheduleService
 from app.services.scheduler_service import SchedulerService
 from app.services.submission_service import SubmissionService
@@ -149,11 +150,18 @@ def get_assessment_service(
     return AssessmentService(db, _llm)
 
 
+def get_late_token_service(
+    db: Annotated[Session, Depends(get_db)],
+) -> LateTokenService:
+    return LateTokenService(db)
+
+
 def get_submission_service(
     db: Annotated[Session, Depends(get_db)],
     scheduler_service: Annotated[SchedulerService, Depends(get_scheduler_service)],
+    late_token_service: Annotated[LateTokenService, Depends(get_late_token_service)],
 ) -> SubmissionService:
-    return SubmissionService(db, scheduler_service)
+    return SubmissionService(db, scheduler_service, late_token_service)
 
 
 def get_grading_service(
