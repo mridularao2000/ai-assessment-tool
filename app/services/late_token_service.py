@@ -3,51 +3,63 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from app.exceptions import InvalidStateError
-from app.models.late_submission_token import LateSubmissionTokenBalance
+from app.models._utils import utcnow
+from app.models.late_submission_token import LateSubmissionToken
 
-MONTHLY_GRANT = 2
 MAX_BALANCE = 2
 
 
 class LateTokenService:
-    """Tracks the monthly late-submission token allowance.
+    """Issues and spends discrete UUID late-submission tokens.
 
-    Single-tenant system: exactly one balance row (id=1) exists, created
-    lazily on first access. A token lets SubmissionService.create() accept
-    a submission for an assessment that has already expired.
+    Single-tenant system. Each token is its own row (see
+    LateSubmissionToken). The monthly cron job tops the pool of unused
+    tokens up to MAX_BALANCE by issuing new UUID tokens; spending marks
+    the oldest unused token as used by SubmissionService.create().
     """
 
     def __init__(self, db: Session) -> None:
         self.db = db
 
     def get_balance(self) -> int:
-        return self._get_or_create_row().balance
+        return self._unused_query().count()
+
+    def list_unused_tokens(self) -> list[str]:
+        """Return the UUIDs of currently unused tokens, oldest first."""
+        rows = self._unused_query().order_by(LateSubmissionToken.issued_at).all()
+        return [row.id for row in rows]
 
     def grant_monthly(self) -> int:
-        """Top the balance up to MAX_BALANCE. Called by the monthly cron job.
+        """Issue new UUID tokens so the unused pool reaches MAX_BALANCE.
 
-        Returns the resulting balance.
+        Called by the monthly cron job. Returns the resulting balance.
         """
-        row = self._get_or_create_row()
-        row.balance = min(row.balance + MONTHLY_GRANT, MAX_BALANCE)
+        unused = self.get_balance()
+        to_issue = max(MAX_BALANCE - unused, 0)
+        for _ in range(to_issue):
+            self.db.add(LateSubmissionToken())
         self.db.commit()
-        return row.balance
+        return unused + to_issue
 
-    def spend(self) -> None:
-        """Deduct one token. Does not commit — caller owns the transaction.
+    def spend(self, assessment_id: str) -> str:
+        """Mark the oldest unused token as used by assessment_id.
+
+        Does not commit — caller owns the transaction.
+        Returns the spent token's id.
 
         Raises:
-            InvalidStateError: if the balance is already 0.
+            InvalidStateError: if no unused token is available.
         """
-        row = self._get_or_create_row()
-        if row.balance <= 0:
+        token = (
+            self._unused_query().order_by(LateSubmissionToken.issued_at).first()
+        )
+        if token is None:
             raise InvalidStateError("No late-submission tokens available.")
-        row.balance -= 1
+        token.used_at = utcnow()
+        token.used_by_assessment_id = assessment_id
+        return token.id
 
-    def _get_or_create_row(self) -> LateSubmissionTokenBalance:
-        row = self.db.get(LateSubmissionTokenBalance, 1)
-        if row is None:
-            row = LateSubmissionTokenBalance(id=1, balance=0)
-            self.db.add(row)
-            self.db.flush()
-        return row
+    def _unused_query(self):
+        return self.db.query(LateSubmissionToken).filter(
+            LateSubmissionToken.used_at.is_(None)
+        )

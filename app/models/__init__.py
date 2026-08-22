@@ -8,7 +8,7 @@ from app.models.assessment import Assessment, AssessmentStatus
 from app.models.submission import Submission, SubmissionType
 from app.models.grade import Grade
 from app.models.reschedule_request import RescheduleRequest
-from app.models.late_submission_token import LateSubmissionTokenBalance
+from app.models.late_submission_token import LateSubmissionToken
 
 __all__ = [
     "Curriculum",
@@ -22,5 +22,5 @@ __all__ = [
     "SubmissionType",
     "Grade",
     "RescheduleRequest",
-    "LateSubmissionTokenBalance",
+    "LateSubmissionToken",
 ]

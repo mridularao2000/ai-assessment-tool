@@ -126,21 +126,13 @@
   <div class="card mb-4 shadow-sm border-0">
     <div class="card-body p-4">
       <h5 class="card-title mb-3"><span class="section-badge">2</span>Submit Answer</h5>
-      <p class="text-muted small mb-3">
+      <p class="text-muted small mb-2">
         On assessment day you'll receive an email with your questions and a link.
         Opening that link pre-fills the Assessment ID and Token below automatically.
       </p>
-
-      <div class="d-flex align-items-center justify-content-between mb-3 p-2 rounded" style="background:#f8f9fa;">
-        <div class="small">
-          <span class="fw-semibold">Late-submission tokens:</span>
-          <span id="tokenBalance" class="font-monospace">—</span>
-        </div>
-        <button type="button" class="btn btn-outline-secondary btn-sm"
-                id="tokenCheckBtn" data-label="Check Tokens" onclick="checkLateTokens()">
-          Check Tokens
-        </button>
-      </div>
+      <p class="text-muted small mb-3">
+        Late submissions remaining this month: <span id="lateTokenCount" class="fw-semibold">—</span>
+      </p>
 
       <form id="submissionForm" novalidate>
 
@@ -370,23 +362,13 @@ document.getElementById('curriculumForm').addEventListener('submit', async (e) =
 
 // ── 2. Submit Answer ─────────────────────────────────────────────────────────
 
-async function checkLateTokens() {
-  const btn   = document.getElementById('tokenCheckBtn');
-  const badge = document.getElementById('tokenBalance');
-
-  setLoading(btn, true);
+async function refreshLateTokenCount() {
+  const el = document.getElementById('lateTokenCount');
   const { ok, data } = await api('/api/v1/late-tokens/');
-  setLoading(btn, false);
-
-  if (ok && typeof data.balance === 'number') {
-    badge.textContent = `${data.balance} available`;
-    btn.disabled = data.balance <= 0;
-  } else {
-    badge.textContent = 'unavailable';
-  }
+  el.textContent = (ok && typeof data.balance === 'number') ? data.balance : '?';
 }
 
-document.addEventListener('DOMContentLoaded', checkLateTokens);
+document.addEventListener('DOMContentLoaded', refreshLateTokenCount);
 
 function toggleSubmissionType() {
   const type = document.getElementById('s_type').value;
@@ -427,6 +409,7 @@ document.getElementById('submissionForm').addEventListener('submit', async (e) =
 
   const { ok, data } = await api('/api/v1/submissions/', { method: 'POST', body: fd });
   showResult('submissionResult', data, !ok);
+  refreshLateTokenCount();
 
   if (ok && data.submission_id) {
     document.getElementById('r_id').value = data.submission_id;

@@ -118,7 +118,7 @@ class SubmissionService:
         self.db.flush()  # populate submission.id before status transition
 
         if is_late:
-            self.late_token_service.spend()
+            self.late_token_service.spend(assessment_id)
             assessment.status = AssessmentStatus.late_submitted
         else:
             assessment.status = AssessmentStatus.submitted

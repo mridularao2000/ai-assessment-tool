@@ -12,11 +12,13 @@ Covers:
 """
 
 import io
+import uuid
 
 import pytest
 
+from app.models._utils import utcnow
 from app.models.assessment import Assessment, AssessmentStatus
-from app.models.late_submission_token import LateSubmissionTokenBalance
+from app.models.late_submission_token import LateSubmissionToken
 from app.models.submission import Submission, SubmissionType
 from app.services.late_token_service import LateTokenService
 from tests.conftest import (
@@ -294,7 +296,7 @@ class TestLateSubmissionTokens:
     def test_expired_with_token_returns_201(self, client, db):
         curriculum = make_curriculum(db)
         assessment, token = make_assessment(db, curriculum, status=AssessmentStatus.expired)
-        db.add(LateSubmissionTokenBalance(id=1, balance=2))
+        db.add_all([LateSubmissionToken(), LateSubmissionToken()])
         db.commit()
 
         response = client.post("/api/v1/submissions/", data={
@@ -309,7 +311,7 @@ class TestLateSubmissionTokens:
     def test_expired_with_token_spends_one_token_and_marks_late(self, client, db):
         curriculum = make_curriculum(db)
         assessment, token = make_assessment(db, curriculum, status=AssessmentStatus.expired)
-        db.add(LateSubmissionTokenBalance(id=1, balance=2))
+        db.add_all([LateSubmissionToken(), LateSubmissionToken()])
         db.commit()
 
         client.post("/api/v1/submissions/", data={
@@ -322,7 +324,13 @@ class TestLateSubmissionTokens:
         db.expire_all()
         refreshed = db.get(Assessment, assessment.id)
         assert refreshed.status == AssessmentStatus.late_submitted
-        assert db.get(LateSubmissionTokenBalance, 1).balance == 1
+
+        remaining = db.query(LateSubmissionToken).all()
+        unused = [t for t in remaining if t.used_at is None]
+        used = [t for t in remaining if t.used_at is not None]
+        assert len(unused) == 1
+        assert len(used) == 1
+        assert used[0].used_by_assessment_id == assessment.id
 
     def test_expired_without_token_still_returns_409(self, client, db):
         curriculum = make_curriculum(db)
@@ -340,7 +348,8 @@ class TestLateSubmissionTokens:
     def test_expired_with_zero_balance_returns_409_and_does_not_spend(self, client, db):
         curriculum = make_curriculum(db)
         assessment, token = make_assessment(db, curriculum, status=AssessmentStatus.expired)
-        db.add(LateSubmissionTokenBalance(id=1, balance=0))
+        used_token = LateSubmissionToken(used_at=utcnow(), used_by_assessment_id=None)
+        db.add(used_token)
         db.commit()
 
         response = client.post("/api/v1/submissions/", data={
@@ -351,41 +360,79 @@ class TestLateSubmissionTokens:
         })
 
         assert response.status_code == 409
-        assert db.get(LateSubmissionTokenBalance, 1).balance == 0
+        db.expire_all()
+        assert db.get(LateSubmissionToken, used_token.id).used_by_assessment_id is None
 
-    def test_balance_endpoint_returns_current_balance(self, client, db):
-        db.add(LateSubmissionTokenBalance(id=1, balance=1))
+    def test_balance_endpoint_returns_current_balance_and_uuids(self, client, db):
+        db.add(LateSubmissionToken())
         db.commit()
 
         response = client.get("/api/v1/late-tokens/")
 
         assert response.status_code == 200
-        assert response.json()["balance"] == 1
+        data = response.json()
+        assert data["balance"] == 1
+        assert len(data["tokens"]) == 1
+        # Confirm it's a real UUID, not just a placeholder count.
+        uuid.UUID(data["tokens"][0])
 
-    def test_balance_endpoint_returns_zero_when_no_row_exists(self, client, db):
+    def test_balance_endpoint_returns_zero_when_no_tokens_exist(self, client, db):
         response = client.get("/api/v1/late-tokens/")
 
         assert response.status_code == 200
-        assert response.json()["balance"] == 0
+        data = response.json()
+        assert data["balance"] == 0
+        assert data["tokens"] == []
+
+    def test_grant_endpoint_tops_up_from_zero(self, client, db):
+        response = client.post("/api/v1/late-tokens/grant")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["balance"] == 2
+        assert len(data["tokens"]) == 2
+
+    def test_grant_endpoint_is_idempotent_within_a_cycle(self, client, db):
+        client.post("/api/v1/late-tokens/grant")
+        response = client.post("/api/v1/late-tokens/grant")
+
+        assert response.status_code == 200
+        assert response.json()["balance"] == 2
+        assert db.query(LateSubmissionToken).count() == 2
 
 
 class TestLateTokenService:
 
-    def test_grant_monthly_from_zero_tops_up_to_two(self, db):
+    def test_grant_monthly_from_zero_issues_two_uuid_tokens(self, db):
         service = LateTokenService(db)
 
         balance = service.grant_monthly()
 
         assert balance == 2
+        tokens = db.query(LateSubmissionToken).all()
+        assert len(tokens) == 2
+        for t in tokens:
+            uuid.UUID(t.id)  # each token is a real UUID
 
-    def test_grant_monthly_caps_at_two_when_already_at_one(self, db):
-        db.add(LateSubmissionTokenBalance(id=1, balance=1))
+    def test_grant_monthly_tops_up_to_two_when_already_at_one(self, db):
+        db.add(LateSubmissionToken())
         db.commit()
         service = LateTokenService(db)
 
         balance = service.grant_monthly()
 
         assert balance == 2
+        assert db.query(LateSubmissionToken).count() == 2
+
+    def test_grant_monthly_issues_nothing_when_already_at_cap(self, db):
+        db.add_all([LateSubmissionToken(), LateSubmissionToken()])
+        db.commit()
+        service = LateTokenService(db)
+
+        balance = service.grant_monthly()
+
+        assert balance == 2
+        assert db.query(LateSubmissionToken).count() == 2
 
     def test_spend_with_zero_balance_raises(self, db):
         from app.exceptions import InvalidStateError
@@ -393,4 +440,19 @@ class TestLateTokenService:
         service = LateTokenService(db)
 
         with pytest.raises(InvalidStateError):
-            service.spend()
+            service.spend("some-assessment-id")
+
+    def test_spend_marks_oldest_unused_token(self, db):
+        older = LateSubmissionToken()
+        db.add(older)
+        db.commit()
+        service = LateTokenService(db)
+
+        spent_id = service.spend("assessment-123")
+        db.commit()
+
+        assert spent_id == older.id
+        db.expire_all()
+        refreshed = db.get(LateSubmissionToken, older.id)
+        assert refreshed.used_at is not None
+        assert refreshed.used_by_assessment_id == "assessment-123"
