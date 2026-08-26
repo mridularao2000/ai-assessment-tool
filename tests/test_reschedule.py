@@ -12,7 +12,7 @@ Covers:
 """
 
 import pytest
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app.exceptions import InvalidStateError, InvalidTokenError, NotFoundError
 from app.models.assessment import Assessment, AssessmentStatus
@@ -179,6 +179,41 @@ class TestApprovedReschedule:
 
         assert response.status_code == 200
         assert response.json()["approved"] is True
+
+
+class TestEntryAwareReschedule:
+    """Rescheduling a curriculum-upload entry must re-anchor reminder_at to
+    the new due_date (entry_reminder_hours_before_deadline), not to
+    scheduled_at like standalone's hardcoded 1-day-before-send reminder.
+    This mirrors the anchor decision already applied to create_retest()/
+    send_assessment_job — RescheduleService previously recomputed dates
+    inline and never branched on entry_type, silently misusing the
+    standalone anchor for entries too.
+    """
+
+    def test_approved_reschedule_on_entry_anchors_reminder_to_due_date(
+        self, client, db
+    ):
+        from app.config import get_settings
+        from app.models.curriculum import CurriculumEntryType
+
+        seed_prompt_templates(db)
+        curriculum = make_curriculum(db, entry_type=CurriculumEntryType.assessment)
+        assessment, token = make_assessment(db, curriculum, status=AssessmentStatus.active)
+
+        response = client.post(
+            f"/api/v1/assessments/{assessment.id}/reschedule",
+            json={"token": token, "reason": VALID_REASON},
+        )
+        assert response.status_code == 200
+
+        db.expire_all()
+        refreshed = db.get(Assessment, assessment.id)
+        hours = get_settings().entry_reminder_hours_before_deadline
+        expected_reminder_at = refreshed.due_date - timedelta(hours=hours)
+        assert refreshed.reminder_at == expected_reminder_at
+        # Not the standalone anchor (scheduled_at - 1 day).
+        assert refreshed.reminder_at != refreshed.scheduled_at - timedelta(days=1)
 
 
 class TestDeniedReschedule:

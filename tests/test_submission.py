@@ -295,7 +295,9 @@ class TestLateSubmissionTokens:
 
     def test_expired_with_token_returns_201(self, client, db):
         curriculum = make_curriculum(db)
-        assessment, token = make_assessment(db, curriculum, status=AssessmentStatus.expired)
+        assessment, token = make_assessment(
+            db, curriculum, status=AssessmentStatus.expired, due_offset_days=-1
+        )
         db.add_all([LateSubmissionToken(), LateSubmissionToken()])
         db.commit()
 
@@ -310,7 +312,9 @@ class TestLateSubmissionTokens:
 
     def test_expired_with_token_spends_one_token_and_marks_late(self, client, db):
         curriculum = make_curriculum(db)
-        assessment, token = make_assessment(db, curriculum, status=AssessmentStatus.expired)
+        assessment, token = make_assessment(
+            db, curriculum, status=AssessmentStatus.expired, due_offset_days=-1
+        )
         db.add_all([LateSubmissionToken(), LateSubmissionToken()])
         db.commit()
 
@@ -334,7 +338,9 @@ class TestLateSubmissionTokens:
 
     def test_expired_without_token_still_returns_409(self, client, db):
         curriculum = make_curriculum(db)
-        assessment, token = make_assessment(db, curriculum, status=AssessmentStatus.expired)
+        assessment, token = make_assessment(
+            db, curriculum, status=AssessmentStatus.expired, due_offset_days=-1
+        )
 
         response = client.post("/api/v1/submissions/", data={
             "assessment_id": assessment.id,
@@ -347,7 +353,9 @@ class TestLateSubmissionTokens:
 
     def test_expired_with_zero_balance_returns_409_and_does_not_spend(self, client, db):
         curriculum = make_curriculum(db)
-        assessment, token = make_assessment(db, curriculum, status=AssessmentStatus.expired)
+        assessment, token = make_assessment(
+            db, curriculum, status=AssessmentStatus.expired, due_offset_days=-1
+        )
         used_token = LateSubmissionToken(used_at=utcnow(), used_by_assessment_id=None)
         db.add(used_token)
         db.commit()
@@ -362,6 +370,81 @@ class TestLateSubmissionTokens:
         assert response.status_code == 409
         db.expire_all()
         assert db.get(LateSubmissionToken, used_token.id).used_by_assessment_id is None
+
+    def test_expired_in_a_previous_calendar_month_rejected_even_with_tokens(self, client, db):
+        """An assessment that expired last month is no longer late-eligible,
+        regardless of token balance — the spec's "within that same calendar
+        month" bound, which nothing previously enforced."""
+        curriculum = make_curriculum(db)
+        assessment, token = make_assessment(
+            db, curriculum, status=AssessmentStatus.expired, due_offset_days=-40
+        )
+        db.add_all([LateSubmissionToken(), LateSubmissionToken()])
+        db.commit()
+
+        response = client.post("/api/v1/submissions/", data={
+            "assessment_id": assessment.id,
+            "token": token,
+            "submission_type": "text",
+            "text_content": VALID_TEXT,
+        })
+
+        assert response.status_code == 409
+        db.expire_all()
+        # No token was spent — rejected before the balance check ever mattered.
+        assert all(t.used_at is None for t in db.query(LateSubmissionToken).all())
+
+    def test_entry_based_assessment_type_late_submission_with_token(self, client, db):
+        """Confirms the generic late-submission mechanism (built for
+        standalone) also works for a curriculum-upload Assessment-type
+        entry, since both share the same Assessment/Submission tables —
+        the "extend, don't duplicate" architecture's whole point."""
+        from app.models.curriculum import CurriculumEntryType
+
+        curriculum = make_curriculum(db, entry_type=CurriculumEntryType.assessment)
+        assessment, token = make_assessment(
+            db, curriculum, status=AssessmentStatus.expired, due_offset_days=-1
+        )
+        db.add_all([LateSubmissionToken(), LateSubmissionToken()])
+        db.commit()
+
+        response = client.post("/api/v1/submissions/", data={
+            "assessment_id": assessment.id,
+            "token": token,
+            "submission_type": "github_url",
+            "github_url": "https://github.com/example/late-project",
+        })
+
+        assert response.status_code == 201
+        db.expire_all()
+        assert db.get(Assessment, assessment.id).status == AssessmentStatus.late_submitted
+
+    def test_entry_based_midterm_late_submission_with_token_and_part1(self, client, db):
+        """Late submission composes correctly with the Part 1 + Part 2
+        two-field requirement for Midterms."""
+        from app.models.curriculum import CurriculumEntryType
+
+        curriculum = make_curriculum(db, entry_type=CurriculumEntryType.midterm)
+        assessment, token = make_assessment(
+            db, curriculum, status=AssessmentStatus.expired, due_offset_days=-1
+        )
+        db.add_all([LateSubmissionToken(), LateSubmissionToken()])
+        db.commit()
+
+        response = client.post("/api/v1/submissions/", data={
+            "assessment_id": assessment.id,
+            "token": token,
+            "submission_type": "github_url",
+            "github_url": "https://github.com/example/late-project",
+            "part1_text_content": "Late Part 1 answer.",
+        })
+
+        assert response.status_code == 201
+        db.expire_all()
+        assert db.get(Assessment, assessment.id).status == AssessmentStatus.late_submitted
+        submission = db.query(Submission).filter_by(assessment_id=assessment.id).first()
+        assert submission.part1_text_content == "Late Part 1 answer."
+        assert submission.github_url == "https://github.com/example/late-project"
 
     def test_balance_endpoint_returns_current_balance_and_uuids(self, client, db):
         db.add(LateSubmissionToken())
@@ -456,3 +539,81 @@ class TestLateTokenService:
         refreshed = db.get(LateSubmissionToken, older.id)
         assert refreshed.used_at is not None
         assert refreshed.used_by_assessment_id == "assessment-123"
+
+
+class TestMidtermTwoPartSubmission:
+    """A Midterm submission needs Part 1 (assignment answer) alongside the
+    normal Part 2 (project) fields — both in one request. See
+    SubmissionService.create()'s part1_text_content handling.
+    """
+
+    def test_assessment_detail_reports_is_midterm_true(self, client, db):
+        from app.models.curriculum import CurriculumEntryType
+
+        curriculum = make_curriculum(db, entry_type=CurriculumEntryType.midterm)
+        assessment, token = make_assessment(db, curriculum, status=AssessmentStatus.active)
+
+        response = client.get(f"/api/v1/assessments/{assessment.id}?token={token}")
+
+        assert response.status_code == 200
+        assert response.json()["is_midterm"] is True
+
+    def test_assessment_detail_reports_is_midterm_false_for_standalone(self, client, db):
+        curriculum = make_curriculum(db)  # entry_type=None
+        assessment, token = make_assessment(db, curriculum, status=AssessmentStatus.active)
+
+        response = client.get(f"/api/v1/assessments/{assessment.id}?token={token}")
+
+        assert response.status_code == 200
+        assert response.json()["is_midterm"] is False
+
+    def test_midterm_submission_without_part1_rejected(self, client, db):
+        from app.models.curriculum import CurriculumEntryType
+
+        curriculum = make_curriculum(db, entry_type=CurriculumEntryType.midterm)
+        assessment, token = make_assessment(db, curriculum, status=AssessmentStatus.active)
+
+        response = client.post("/api/v1/submissions/", data={
+            "assessment_id": assessment.id,
+            "token": token,
+            "submission_type": "github_url",
+            "github_url": "https://github.com/example/project",
+        })
+
+        assert response.status_code == 409
+
+    def test_midterm_submission_with_part1_and_project_succeeds(self, client, db):
+        from app.models.curriculum import CurriculumEntryType
+
+        curriculum = make_curriculum(db, entry_type=CurriculumEntryType.midterm)
+        assessment, token = make_assessment(db, curriculum, status=AssessmentStatus.active)
+
+        response = client.post("/api/v1/submissions/", data={
+            "assessment_id": assessment.id,
+            "token": token,
+            "submission_type": "github_url",
+            "github_url": "https://github.com/example/project",
+            "part1_text_content": "Part 1 answer covering the cumulative assignment questions.",
+        })
+
+        assert response.status_code == 201
+        db.expire_all()
+        submission = db.query(Submission).filter_by(assessment_id=assessment.id).first()
+        assert submission.github_url == "https://github.com/example/project"
+        assert submission.part1_text_content == (
+            "Part 1 answer covering the cumulative assignment questions."
+        )
+
+    def test_non_midterm_submission_rejects_part1_text_content(self, client, db):
+        curriculum = make_curriculum(db)  # entry_type=None
+        assessment, token = make_assessment(db, curriculum, status=AssessmentStatus.active)
+
+        response = client.post("/api/v1/submissions/", data={
+            "assessment_id": assessment.id,
+            "token": token,
+            "submission_type": "text",
+            "text_content": VALID_TEXT,
+            "part1_text_content": "This should not be accepted here.",
+        })
+
+        assert response.status_code == 409

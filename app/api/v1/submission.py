@@ -21,6 +21,7 @@ def create_submission(
     github_url: Annotated[Optional[str], Form()] = None,
     text_content: Annotated[Optional[str], Form()] = None,
     file: Annotated[Optional[UploadFile], File()] = None,
+    part1_text_content: Annotated[Optional[str], Form()] = None,
     submission_svc: SubmissionService = Depends(get_submission_service),
 ) -> SubmissionResponse:
     uploaded_file = None
@@ -35,6 +36,7 @@ def create_submission(
             github_url=github_url,
             text_content=text_content,
             uploaded_file=uploaded_file,
+            part1_text_content=part1_text_content,
         )
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))

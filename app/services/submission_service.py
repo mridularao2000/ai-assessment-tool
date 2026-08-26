@@ -9,7 +9,9 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.exceptions import InvalidStateError, InvalidTokenError, NotFoundError
 from app.interfaces.scheduler import SchedulerInterface
+from app.models._utils import utcnow
 from app.models.assessment import Assessment, AssessmentStatus
+from app.models.curriculum import CurriculumEntryType
 from app.models.submission import Submission, SubmissionType
 from app.services.late_token_service import LateTokenService
 from app.utils import token_auth
@@ -49,33 +51,46 @@ class SubmissionService:
         github_url: Optional[str] = None,
         text_content: Optional[str] = None,
         uploaded_file: Optional[tuple[str, bytes]] = None,
+        part1_text_content: Optional[str] = None,
     ) -> Submission:
         """Validate, persist, and schedule grading for a new submission.
+
+        For a Midterm-type entry, part1_text_content answers Part 1 (the
+        assignment questions) and is required; submission_type/github_url/
+        text_content/uploaded_file continue to represent Part 2 (the
+        project) exactly as for any other submission. For anything else
+        (standalone or Assessment-type), part1_text_content must be absent.
 
         Steps:
           1. Load Assessment by assessment_id.
              Raise NotFoundError if missing.
           2. Verify token via token_auth.verify_submission_token.
              Raise InvalidTokenError if verification fails.
-          3. Verify Assessment.status == active, OR status == expired with a
-             late-submission token available (spends one token and marks the
-             submission late). Raise InvalidStateError otherwise.
-          4. Resolve file_path for submission_type == file:
+          3. Verify Assessment.status == active, OR status == expired AND
+             due_date falls in the current calendar month AND a
+             late-submission token is available (spends one token and marks
+             the submission late). Raise InvalidStateError otherwise — an
+             assessment that expired in an earlier calendar month is no
+             longer late-eligible even if tokens remain.
+          4. Verify part1_text_content is present iff the entry is a Midterm.
+          5. Resolve file_path for submission_type == file:
                - Resolve settings.uploads_dir, create directory if absent.
                - Write bytes under <uploads_dir>/<uuid>_<original_filename>.
-          5. Create and flush the Submission row.
-          6. Transition Assessment.status → submitted (or late_submitted).
-          7. Commit.
-          8. Call scheduler_service.schedule_grade_job(submission.id).
+          6. Create and flush the Submission row.
+          7. Transition Assessment.status → submitted (or late_submitted).
+          8. Commit.
+          9. Call scheduler_service.schedule_grade_job(submission.id).
              Scheduler failure is NOT rolled back — submission is already committed.
-          9. Return the Submission.
+          10. Return the Submission.
 
         Raises:
             NotFoundError: if assessment_id does not exist.
             InvalidTokenError: if the token does not match.
             InvalidStateError: if Assessment.status is not active (and not an
-                               expired assessment with a token available), or
-                               a submission already exists for this assessment.
+                               expired assessment with a token available), a
+                               submission already exists for this assessment,
+                               or part1_text_content presence doesn't match
+                               whether the entry is a Midterm.
         """
         assessment = self.db.get(Assessment, assessment_id)
         if assessment is None:
@@ -86,6 +101,12 @@ class SubmissionService:
 
         is_late = False
         if assessment.status == AssessmentStatus.expired:
+            now = utcnow()
+            if (assessment.due_date.year, assessment.due_date.month) != (now.year, now.month):
+                raise InvalidStateError(
+                    f"Assessment {assessment_id!r} expired in a previous "
+                    "calendar month — no longer late-eligible."
+                )
             if self.late_token_service.get_balance() <= 0:
                 raise InvalidStateError(
                     f"Assessment {assessment_id!r} has expired and no "
@@ -103,6 +124,18 @@ class SubmissionService:
                 f"Assessment {assessment_id!r} already has a submission."
             )
 
+        is_midterm = assessment.curriculum.entry_type == CurriculumEntryType.midterm
+        if is_midterm and not (part1_text_content and part1_text_content.strip()):
+            raise InvalidStateError(
+                f"Assessment {assessment_id!r} is a Midterm — part1_text_content "
+                "(answering the assignment questions) is required."
+            )
+        if not is_midterm and part1_text_content:
+            raise InvalidStateError(
+                f"Assessment {assessment_id!r} is not a Midterm — "
+                "part1_text_content must not be supplied."
+            )
+
         file_path: Optional[str] = None
         if submission_type == SubmissionType.file:
             file_path = self._save_file(uploaded_file)
@@ -113,6 +146,7 @@ class SubmissionService:
             github_url=github_url if submission_type == SubmissionType.github_url else None,
             text_content=text_content if submission_type == SubmissionType.text else None,
             file_path=file_path,
+            part1_text_content=part1_text_content if is_midterm else None,
         )
         self.db.add(submission)
         self.db.flush()  # populate submission.id before status transition

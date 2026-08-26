@@ -28,6 +28,18 @@ class Grade(Base):
     # Passed to retest_generation prompt when mastery_score < mastery_threshold.
     weak_areas: Mapped[Optional[list]] = mapped_column(JSON, default=None)
     overall_feedback: Mapped[str] = mapped_column(Text, nullable=False)
+    # Midterm-type only — raw points per part. Null for standalone and
+    # Assessment-type entries (they use mastery_score directly).
+    part1_score: Mapped[Optional[float]] = mapped_column(Float, default=None)
+    part2_score: Mapped[Optional[float]] = mapped_column(Float, default=None)
+    # GPA inputs. Null for standalone rows (they don't participate in GPA).
+    # For Assessment-type entries: score_earned = mastery_score/100*max_marks.
+    # For Midterm-type entries: score_earned = part1_score+part2_score, and
+    # mastery_score is back-derived as score_earned/max_marks*100 so the
+    # existing mastery_threshold pass/fail comparison works unchanged for
+    # all three cases without a branch in the retake-cap logic.
+    score_earned: Mapped[Optional[float]] = mapped_column(Float, default=None)
+    max_marks: Mapped[Optional[float]] = mapped_column(Float, default=None)
     grading_prompt_id: Mapped[Optional[str]] = mapped_column(
         String(36), ForeignKey("prompt_templates.id"), nullable=True, default=None
     )

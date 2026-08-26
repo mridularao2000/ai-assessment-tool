@@ -35,9 +35,14 @@ class Submission(Base):
     )
     # Exactly one of the three content fields is non-null, matching submission_type.
     # Mutual exclusivity is enforced by the submission schema validator.
+    # For a Midterm, these three represent PART 2 (the project) only.
     github_url: Mapped[Optional[str]] = mapped_column(Text, default=None)
     text_content: Mapped[Optional[str]] = mapped_column(Text, default=None)
     file_path: Mapped[Optional[str]] = mapped_column(Text, default=None)
+    # Midterm-type only (curriculum-upload) — Part 1's assignment-question
+    # answer, submitted alongside the Part 2 project fields above in the
+    # same request. Null for standalone and Assessment-type entries.
+    part1_text_content: Mapped[Optional[str]] = mapped_column(Text, default=None)
     submitted_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=utcnow
     )

@@ -147,8 +147,17 @@
           </div>
         </div>
 
+        <div id="s_part1_section" class="sub-section mb-3 d-none">
+          <label class="form-label" for="s_part1_text">
+            Part 1 — Assignment Answer
+            <span class="text-muted fw-normal">(cumulative questions from the exam email)</span>
+          </label>
+          <textarea class="form-control" id="s_part1_text" rows="5"
+                    placeholder="Answer Part 1's assignment questions here…"></textarea>
+        </div>
+
         <div class="mb-3">
-          <label class="form-label" for="s_type">Submission Type</label>
+          <label class="form-label" for="s_type" id="s_type_label">Submission Type</label>
           <select class="form-select" id="s_type" onchange="toggleSubmissionType()">
             <option value="text">Text answer</option>
             <option value="github_url">GitHub URL</option>
@@ -257,7 +266,9 @@
 // ── URL param pre-fill (email deep links) ────────────────────────────────────
 // Assessment emails link to: {APP_BASE_URL}?assessment_id=...&token=...
 // Pre-fills Submit Answer and Reschedule fields, then scrolls to Submit.
-document.addEventListener('DOMContentLoaded', () => {
+// Also fetches the assessment to check is_midterm, so the separate Part 1
+// (assignment) answer field only shows up when it's actually needed.
+document.addEventListener('DOMContentLoaded', async () => {
   const p = new URLSearchParams(window.location.search);
   const aid   = p.get('assessment_id');
   const token = p.get('token');
@@ -265,6 +276,14 @@ document.addEventListener('DOMContentLoaded', () => {
     ['s_id', 're_id'].forEach(id => document.getElementById(id).value = aid);
     ['s_token', 're_token'].forEach(id => document.getElementById(id).value = token);
     document.getElementById('submissionBtn').scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+    const { ok, data } = await api(
+      `/api/v1/assessments/${encodeURIComponent(aid)}?token=${encodeURIComponent(token)}`
+    );
+    if (ok && data.is_midterm) {
+      document.getElementById('s_part1_section').classList.remove('d-none');
+      document.getElementById('s_type_label').textContent = 'Part 2 — Project Submission Type';
+    }
   }
 });
 
@@ -391,6 +410,13 @@ document.getElementById('submissionForm').addEventListener('submit', async (e) =
     }
   }
 
+  const isMidterm = !document.getElementById('s_part1_section').classList.contains('d-none');
+  const part1Text = document.getElementById('s_part1_text').value.trim();
+  if (isMidterm && !part1Text) {
+    showResult('submissionResult', 'Part 1 (assignment answer) is required for this Midterm.', true);
+    return;
+  }
+
   setLoading(btn, true);
   showProgress('submissionResult', ['Submitting your answer'], 0);
 
@@ -398,6 +424,9 @@ document.getElementById('submissionForm').addEventListener('submit', async (e) =
   fd.append('assessment_id',   document.getElementById('s_id').value.trim());
   fd.append('token',           document.getElementById('s_token').value.trim());
   fd.append('submission_type', type);
+  if (isMidterm) {
+    fd.append('part1_text_content', part1Text);
+  }
 
   if (type === 'text') {
     fd.append('text_content', document.getElementById('s_text').value);

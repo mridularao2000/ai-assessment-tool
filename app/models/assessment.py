@@ -43,9 +43,18 @@ class Assessment(Base):
     attempt_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     # Populated by AssessmentService after Claude generation.
     # Null while status == scheduled and generation is pending.
+    # For curriculum-upload Midterm-type entries, these two stay null and
+    # part1_text/part2_text are used instead (see below) — never both.
     assessment_text: Mapped[Optional[str]] = mapped_column(Text, default=None)
     # Never exposed to the user — grading reference only.
     rubric: Mapped[Optional[str]] = mapped_column(Text, default=None)
+    # Midterm-type only (curriculum-upload) — null for standalone and
+    # Assessment-type entries. Populated by AssessmentService.
+    # generate_midterm_content() at send-time, same as assessment_text.
+    part1_text: Mapped[Optional[str]] = mapped_column(Text, default=None)
+    part1_rubric: Mapped[Optional[str]] = mapped_column(Text, default=None)
+    part2_text: Mapped[Optional[str]] = mapped_column(Text, default=None)
+    part2_rubric: Mapped[Optional[str]] = mapped_column(Text, default=None)
     # Claude-determined from curriculum complexity. Included in assessment email.
     duration_minutes: Mapped[Optional[int]] = mapped_column(Integer, default=None)
     generation_prompt_id: Mapped[Optional[str]] = mapped_column(

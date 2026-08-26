@@ -41,3 +41,7 @@ class AssessmentDetailResponse(BaseModel):
     scheduled_at: datetime
     due_date: datetime
     status: AssessmentStatus
+    # True for a curriculum-upload Midterm entry — tells the frontend to
+    # show the separate Part 1 (assignment) answer field alongside the
+    # normal Part 2 (project) submission fields.
+    is_midterm: bool = False

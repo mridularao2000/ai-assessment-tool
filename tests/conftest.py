@@ -34,6 +34,11 @@ from app.interfaces.llm import (
     CurriculumAnalysisResult,
     GradingRequest,
     GradingResult,
+    MidtermGenerationRequest,
+    MidtermGenerationResult,
+    MidtermGradingRequest,
+    MidtermGradingResult,
+    MidtermRetestGenerationRequest,
     RescheduleClassificationRequest,
     RescheduleClassificationResult,
     RetestGenerationRequest,
@@ -88,6 +93,128 @@ def _no_apscheduler():
         yield
 
 
+class NoopEmailAdapter:
+    """Safe no-op EmailInterface — does nothing, never touches the network."""
+
+    def send_assessment_email(self, data) -> None:
+        pass
+
+    def send_reminder_email(self, data) -> None:
+        pass
+
+    def send_results_email(self, data) -> None:
+        pass
+
+    def send_syllabus_email(self, data) -> None:
+        pass
+
+    def send_transcript_email(self, data) -> None:
+        pass
+
+    def send_midterm_hold_reminder_email(self, data) -> None:
+        pass
+
+
+class RecordingEmailAdapter(NoopEmailAdapter):
+    """Records every call instead of doing nothing, so tests can assert on
+    exactly what was sent (recipients, content) without touching the network."""
+
+    def __init__(self):
+        self.assessment_calls = []
+        self.reminder_calls = []
+        self.results_calls = []
+        self.syllabus_calls = []
+        self.transcript_calls = []
+        self.hold_reminder_calls = []
+
+    def send_assessment_email(self, data) -> None:
+        self.assessment_calls.append(data)
+
+    def send_reminder_email(self, data) -> None:
+        self.reminder_calls.append(data)
+
+    def send_results_email(self, data) -> None:
+        self.results_calls.append(data)
+
+    def send_syllabus_email(self, data) -> None:
+        self.syllabus_calls.append(data)
+
+    def send_transcript_email(self, data) -> None:
+        self.transcript_calls.append(data)
+
+    def send_midterm_hold_reminder_email(self, data) -> None:
+        self.hold_reminder_calls.append(data)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_email_in_jobs(monkeypatch):
+    """Prevent any test from ever sending a real email via Resend.
+
+    app/jobs/{grade_submission_job,send_assessment_job,send_reminder_job}.py
+    each import `_email` as a module-level singleton directly from
+    app.dependencies (`from app.dependencies import _email`), bypassing
+    FastAPI's dependency-override system entirely. The `client` fixture's
+    app.dependency_overrides never touches this — it only intercepts
+    Depends()-injected services at the route layer.
+
+    A test that invokes one of those job functions directly (rather than
+    through an HTTP call whose scheduling is faked) would otherwise hit the
+    REAL ResendEmailAdapter with the REAL API key from .env. This bit us
+    once already (a retake-cap test that called grade_submission_job()
+    directly mailed the real registered inbox), so this is a blanket
+    default for every test going forward — individual tests may still
+    monkeypatch a specific job's `_email` further (e.g. to assert on calls),
+    which layers cleanly on top since monkeypatch undoes in LIFO order.
+    """
+    noop = NoopEmailAdapter()
+    for module in (
+        "app.jobs.grade_submission_job",
+        "app.jobs.send_assessment_job",
+        "app.jobs.send_reminder_job",
+    ):
+        monkeypatch.setattr(f"{module}._email", noop)
+
+
+class _UnconfiguredLLMAdapter:
+    """Autouse default for _llm in job modules that call the real LLM
+    directly (grade_submission_job, send_assessment_job). Raises
+    immediately and loudly — rather than a silent no-op — so a test that
+    forgets to monkeypatch _llm to FakeLLM/FakeLLMBelowThreshold fails fast
+    with a clear message, instead of either producing nonsense downstream
+    or (the real risk) hitting the real, billed Anthropic API using the
+    real key from .env.
+    """
+
+    def _boom(self, *args, **kwargs):
+        raise RuntimeError(
+            "Test invoked a job's real _llm without patching it to a Fake* "
+            "LLM first — see _no_real_llm_in_jobs in conftest.py."
+        )
+
+    analyze_curriculum = _boom
+    generate_assessment = _boom
+    generate_retest = _boom
+    generate_midterm = _boom
+    grade_submission = _boom
+    classify_reschedule_request = _boom
+
+
+@pytest.fixture(autouse=True)
+def _no_real_llm_in_jobs(monkeypatch):
+    """Prevent any test from ever calling the real, billed Anthropic API.
+
+    Same rationale as _no_real_email_in_jobs above, for `_llm` — jobs that
+    import it as a module-level singleton bypass FastAPI's
+    dependency-override system entirely. Unlike the email case this
+    defaults to a loud failure, not a silent no-op, since a test relying on
+    generated content needs an explicit Fake* LLM to produce something
+    meaningful anyway.
+    """
+    unconfigured = _UnconfiguredLLMAdapter()
+    for module in ("app.jobs.grade_submission_job", "app.jobs.send_assessment_job"):
+        monkeypatch.setattr(f"{module}._llm", unconfigured)
+
+
 @pytest.fixture
 def db(_tables) -> Generator[Session, None, None]:
     """Test session for seeding data and asserting DB state."""
@@ -131,11 +258,37 @@ class FakeLLM:
             duration_minutes=45,
         )
 
+    def generate_midterm(self, req: MidtermGenerationRequest) -> MidtermGenerationResult:
+        return MidtermGenerationResult(
+            part1_text="Part 1: small coding questions on cumulative material.",
+            part1_rubric="Part 1 rubric — full marks for correct implementations.",
+            part2_text="Part 2: defend your project's design decisions.",
+            part2_rubric="Part 2 rubric — full marks for well-justified decisions.",
+            duration_minutes=120,
+        )
+
     def grade_submission(self, req: GradingRequest) -> GradingResult:
         return GradingResult(
             mastery_score=90.0,
             weak_areas=[],
             overall_feedback="Excellent understanding demonstrated.",
+        )
+
+    def grade_midterm_submission(self, req: MidtermGradingRequest) -> MidtermGradingResult:
+        return MidtermGradingResult(
+            part1_score=req.part1_max_marks * 0.9,
+            part2_score=req.part2_max_marks * 0.9,
+            weak_areas=[],
+            overall_feedback="Strong grasp of cumulative material and clear project defense.",
+        )
+
+    def generate_midterm_retest(self, req: MidtermRetestGenerationRequest) -> MidtermGenerationResult:
+        return MidtermGenerationResult(
+            part1_text="Part 1 retest: focus on weak areas identified previously.",
+            part1_rubric="Part 1 retest rubric — full marks for correcting weak areas.",
+            part2_text="Part 2 retest: defend your project's design decisions again.",
+            part2_rubric="Part 2 retest rubric — full marks for well-justified decisions.",
+            duration_minutes=120,
         )
 
     def classify_reschedule_request(
@@ -155,6 +308,14 @@ class FakeLLMBelowThreshold(FakeLLM):
             mastery_score=70.0,
             weak_areas=["event loop internals", "coroutine lifecycle"],
             overall_feedback="Needs improvement on core concurrency concepts.",
+        )
+
+    def grade_midterm_submission(self, req: MidtermGradingRequest) -> MidtermGradingResult:
+        return MidtermGradingResult(
+            part1_score=req.part1_max_marks * 0.7,
+            part2_score=req.part2_max_marks * 0.7,
+            weak_areas=["state management internals", "project architecture rationale"],
+            overall_feedback="Needs improvement on both cumulative concepts and project defense.",
         )
 
 
@@ -319,7 +480,10 @@ def seed_prompt_templates(db: Session) -> None:
     for slug in (
         "assessment_generation",
         "retest_generation",
+        "midterm_generation",
+        "midterm_retest_generation",
         "grading",
+        "midterm_grading",
         "reschedule_classification",
     ):
         db.add(
@@ -341,6 +505,7 @@ def make_curriculum(
     target_completion_date: date | None = None,
     status: CurriculumStatus = CurriculumStatus.ready,
     extracted_content: str = "Comprehensive notes on Python async/await and the event loop.",
+    entry_type=None,
 ) -> Curriculum:
     curriculum = Curriculum(
         id=str(uuid.uuid4()),
@@ -348,6 +513,7 @@ def make_curriculum(
         target_completion_date=target_completion_date or date(2026, 8, 1),
         extracted_content=extracted_content,
         status=status,
+        entry_type=entry_type,
     )
     db.add(curriculum)
     db.commit()
@@ -361,6 +527,11 @@ def make_assessment(
     *,
     status: AssessmentStatus = AssessmentStatus.active,
     due_offset_days: int = 7,
+    attempt_number: int = 1,
+    part1_text: str | None = None,
+    part1_rubric: str | None = None,
+    part2_text: str | None = None,
+    part2_rubric: str | None = None,
 ) -> tuple[Assessment, str]:
     """Return (assessment, token). assessment.scheduled_job_ids is pre-populated."""
     assessment_id = str(uuid.uuid4())
@@ -369,9 +540,13 @@ def make_assessment(
     assessment = Assessment(
         id=assessment_id,
         curriculum_id=curriculum.id,
-        attempt_number=1,
+        attempt_number=attempt_number,
         assessment_text="Explain the Python event loop in detail.",
         rubric="Full marks for: event loop, coroutines, await semantics.",
+        part1_text=part1_text,
+        part1_rubric=part1_rubric,
+        part2_text=part2_text,
+        part2_rubric=part2_rubric,
         duration_minutes=60,
         scheduled_at=now + timedelta(days=2),
         reminder_at=now + timedelta(hours=24),
@@ -395,6 +570,7 @@ def make_submission(
     assessment: Assessment,
     *,
     text_content: str = "Async/await enables concurrent I/O without OS threads.",
+    part1_text_content: str | None = None,
 ) -> Submission:
     """Create a text submission and mark the assessment as submitted."""
     submission = Submission(
@@ -402,6 +578,7 @@ def make_submission(
         assessment_id=assessment.id,
         submission_type=SubmissionType.text,
         text_content=text_content,
+        part1_text_content=part1_text_content,
     )
     assessment.status = AssessmentStatus.submitted
     db.add(submission)
@@ -417,6 +594,10 @@ def make_grade(
     mastery_score: float = 90.0,
     weak_areas: list | None = None,
     overall_feedback: str = "Well done.",
+    part1_score: float | None = None,
+    part2_score: float | None = None,
+    score_earned: float | None = None,
+    max_marks: float | None = None,
 ) -> Grade:
     """Create a grade and mark the assessment as completed."""
     grade = Grade(
@@ -425,6 +606,10 @@ def make_grade(
         mastery_score=mastery_score,
         weak_areas=weak_areas if weak_areas is not None else [],
         overall_feedback=overall_feedback,
+        part1_score=part1_score,
+        part2_score=part2_score,
+        score_earned=score_earned,
+        max_marks=max_marks,
     )
     db.query(Assessment).filter(
         Assessment.id == submission.assessment_id

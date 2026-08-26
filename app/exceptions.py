@@ -15,3 +15,9 @@ class InvalidTokenError(Exception):
 
 class IngestionError(Exception):
     """Raised when a URL, repo, or file cannot be fetched or parsed."""
+
+
+class CurriculumUploadValidationError(Exception):
+    """Raised when an uploaded curriculum file doesn't match the template
+    contract. Carries a per-entry, per-field message; the whole upload is
+    rejected atomically — no partial ingestion."""

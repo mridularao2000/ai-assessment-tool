@@ -18,12 +18,14 @@ import pytest
 
 from app.exceptions import InvalidStateError, NotFoundError
 from app.models.assessment import Assessment, AssessmentStatus
+from app.models.curriculum import Curriculum, CurriculumEntryType, CurriculumStatus
 from app.models.grade import Grade
 from app.models.submission import Submission, SubmissionType
 from app.services.grading_service import GradingService
 from tests.conftest import (
     FakeLLM,
     FakeLLMBelowThreshold,
+    FakeScheduler,
     TestSessionLocal,
     make_assessment,
     make_curriculum,
@@ -299,3 +301,230 @@ class TestGradingDatabaseState:
         persisted = db.get(Grade, grade.id)
         # grading_prompt_id should reference the 'grading' template
         assert persisted.grading_prompt_id is not None
+
+
+class TestRetakeCap:
+    """grade_submission_job: cap of 2 total attempts (original + 1 retake),
+    regardless of score. Both create_retest() and mark_mastery() existed but
+    had zero callers before this wiring — these tests exercise the job
+    function directly (SessionLocal/_llm/get_scheduler_adapter monkeypatched
+    to the test DB/fakes, since the job opens its own session rather than
+    going through FastAPI's dependency-injected one).
+    """
+
+    def _patch_job(self, monkeypatch, llm, fake_scheduler):
+        # _email is already forced to a no-op by the autouse _no_real_email_in_jobs
+        # fixture in conftest.py — see that fixture's docstring for why this matters.
+        monkeypatch.setattr("app.jobs.grade_submission_job.SessionLocal", TestSessionLocal)
+        monkeypatch.setattr("app.jobs.grade_submission_job._llm", llm)
+        monkeypatch.setattr(
+            "app.jobs.grade_submission_job.get_scheduler_adapter", lambda: fake_scheduler
+        )
+
+    def test_below_threshold_first_attempt_schedules_retest(self, db, monkeypatch):
+        from app.jobs.grade_submission_job import grade_submission_job
+
+        seed_prompt_templates(db)
+        curriculum = make_curriculum(db)
+        assessment, _ = make_assessment(db, curriculum, status=AssessmentStatus.active)
+        submission = make_submission(db, assessment)
+        fake_scheduler = FakeScheduler()
+        self._patch_job(monkeypatch, FakeLLMBelowThreshold(), fake_scheduler)
+
+        grade_submission_job(submission.id)
+
+        db.expire_all()
+        assessments = (
+            db.query(Assessment)
+            .filter_by(curriculum_id=curriculum.id)
+            .order_by(Assessment.attempt_number)
+            .all()
+        )
+        assert [a.attempt_number for a in assessments] == [1, 2]
+        assert len(fake_scheduler.schedule_assessment_jobs_calls) == 1
+
+    def test_below_threshold_second_attempt_reaches_cap_no_third(self, db, monkeypatch):
+        from app.jobs.grade_submission_job import grade_submission_job
+
+        seed_prompt_templates(db)
+        curriculum = make_curriculum(db)
+        assessment, _ = make_assessment(db, curriculum, status=AssessmentStatus.active)
+        assessment.attempt_number = 2
+        db.commit()
+        submission = make_submission(db, assessment)
+        fake_scheduler = FakeScheduler()
+        self._patch_job(monkeypatch, FakeLLMBelowThreshold(), fake_scheduler)
+
+        grade_submission_job(submission.id)
+
+        db.expire_all()
+        assessments = db.query(Assessment).filter_by(curriculum_id=curriculum.id).all()
+        assert len(assessments) == 1  # no attempt 3 created
+        assert fake_scheduler.schedule_assessment_jobs_calls == []
+
+    def test_passing_first_attempt_marks_mastery_no_retest(self, db, monkeypatch):
+        from app.jobs.grade_submission_job import grade_submission_job
+
+        seed_prompt_templates(db)
+        curriculum = make_curriculum(db)
+        assessment, _ = make_assessment(db, curriculum, status=AssessmentStatus.active)
+        submission = make_submission(db, assessment)
+        fake_scheduler = FakeScheduler()
+        self._patch_job(monkeypatch, FakeLLM(), fake_scheduler)  # FakeLLM grades 90.0, passes
+
+        grade_submission_job(submission.id)
+
+        db.expire_all()
+        refreshed = db.get(Curriculum, curriculum.id)
+        assert refreshed.mastery_achieved is True
+        assert refreshed.status == CurriculumStatus.complete
+        assessments = db.query(Assessment).filter_by(curriculum_id=curriculum.id).all()
+        assert len(assessments) == 1
+        assert fake_scheduler.schedule_assessment_jobs_calls == []
+
+    def test_passing_first_attempt_marks_mastery_for_assessment_type_entry(self, db, monkeypatch):
+        """mark_mastery() is generic (no entry_type branch) and correct for
+        entries by construction, but was never actually exercised end-to-end
+        with an entry-type curriculum until now — only the standalone path
+        above was covered."""
+        from app.jobs.grade_submission_job import grade_submission_job
+
+        seed_prompt_templates(db)
+        curriculum = make_curriculum(db, entry_type=CurriculumEntryType.assessment)
+        assessment, _ = make_assessment(db, curriculum, status=AssessmentStatus.active)
+        submission = make_submission(db, assessment)
+        fake_scheduler = FakeScheduler()
+        self._patch_job(monkeypatch, FakeLLM(), fake_scheduler)  # FakeLLM grades 90.0, passes
+
+        grade_submission_job(submission.id)
+
+        db.expire_all()
+        refreshed = db.get(Curriculum, curriculum.id)
+        assert refreshed.mastery_achieved is True
+        assert refreshed.status == CurriculumStatus.complete
+        assessments = db.query(Assessment).filter_by(curriculum_id=curriculum.id).all()
+        assert len(assessments) == 1
+        assert fake_scheduler.schedule_assessment_jobs_calls == []
+
+    def _make_midterm_curriculum(self, db):
+        from app.models.midterm_detail import MidtermDetail
+
+        curriculum = make_curriculum(db, entry_type=CurriculumEntryType.midterm)
+        curriculum.max_marks = 100.0
+        db.add(MidtermDetail(
+            curriculum_id=curriculum.id,
+            known_now=["design doc"],
+            pending_completion_labels={},
+            pending_completion_slots={},
+            probe_focus="architecture decisions",
+            part1_max_marks=30.0,
+            part2_max_marks=70.0,
+        ))
+        db.commit()
+        db.refresh(curriculum)
+        return curriculum
+
+    def test_below_threshold_midterm_first_attempt_schedules_two_part_retest(self, db, monkeypatch):
+        from app.jobs.grade_submission_job import grade_submission_job
+        from tests.conftest import FakeLLMBelowThreshold
+
+        seed_prompt_templates(db)
+        curriculum = self._make_midterm_curriculum(db)
+        assessment, _ = make_assessment(
+            db, curriculum, status=AssessmentStatus.active,
+            part1_text="Part 1 exam", part1_rubric="Part 1 rubric",
+            part2_text="Part 2 exam", part2_rubric="Part 2 rubric",
+        )
+        submission = make_submission(db, assessment, part1_text_content="Part 1 answer")
+        fake_scheduler = FakeScheduler()
+        self._patch_job(monkeypatch, FakeLLMBelowThreshold(), fake_scheduler)
+
+        grade_submission_job(submission.id)
+
+        db.expire_all()
+        assessments = (
+            db.query(Assessment)
+            .filter_by(curriculum_id=curriculum.id)
+            .order_by(Assessment.attempt_number)
+            .all()
+        )
+        assert [a.attempt_number for a in assessments] == [1, 2]
+        retest = assessments[1]
+        assert retest.part1_text is not None
+        assert retest.part2_text is not None
+        assert retest.assessment_text is None
+        assert len(fake_scheduler.schedule_assessment_jobs_calls) == 1
+
+    def test_passing_midterm_first_attempt_marks_mastery_no_retest(self, db, monkeypatch):
+        from app.jobs.grade_submission_job import grade_submission_job
+
+        seed_prompt_templates(db)
+        curriculum = self._make_midterm_curriculum(db)
+        assessment, _ = make_assessment(
+            db, curriculum, status=AssessmentStatus.active,
+            part1_text="Part 1 exam", part1_rubric="Part 1 rubric",
+            part2_text="Part 2 exam", part2_rubric="Part 2 rubric",
+        )
+        submission = make_submission(db, assessment, part1_text_content="Part 1 answer")
+        fake_scheduler = FakeScheduler()
+        self._patch_job(monkeypatch, FakeLLM(), fake_scheduler)  # 90% of each part, passes
+
+        grade_submission_job(submission.id)
+
+        db.expire_all()
+        refreshed = db.get(Curriculum, curriculum.id)
+        assert refreshed.mastery_achieved is True
+        assert refreshed.status == CurriculumStatus.complete
+        assessments = db.query(Assessment).filter_by(curriculum_id=curriculum.id).all()
+        assert len(assessments) == 1
+        assert fake_scheduler.schedule_assessment_jobs_calls == []
+
+    def test_midterm_second_attempt_reaches_cap_no_third(self, db, monkeypatch):
+        from app.jobs.grade_submission_job import grade_submission_job
+        from tests.conftest import FakeLLMBelowThreshold
+
+        seed_prompt_templates(db)
+        curriculum = self._make_midterm_curriculum(db)
+        assessment, _ = make_assessment(
+            db, curriculum, status=AssessmentStatus.active, attempt_number=2,
+            part1_text="Part 1 exam", part1_rubric="Part 1 rubric",
+            part2_text="Part 2 exam", part2_rubric="Part 2 rubric",
+        )
+        submission = make_submission(db, assessment, part1_text_content="Part 1 answer")
+        fake_scheduler = FakeScheduler()
+        self._patch_job(monkeypatch, FakeLLMBelowThreshold(), fake_scheduler)
+
+        grade_submission_job(submission.id)
+
+        db.expire_all()
+        assessments = db.query(Assessment).filter_by(curriculum_id=curriculum.id).all()
+        assert len(assessments) == 1  # no attempt 3 created
+        assert fake_scheduler.schedule_assessment_jobs_calls == []
+
+    def test_late_attempt_counts_toward_same_cap(self, db, monkeypatch):
+        """A late-token-covered attempt increments attempt_number identically
+        to an on-time one, so the cap applies uniformly."""
+        from app.jobs.grade_submission_job import grade_submission_job
+
+        seed_prompt_templates(db)
+        curriculum = make_curriculum(db)
+        assessment, _ = make_assessment(db, curriculum, status=AssessmentStatus.active)
+        assessment.attempt_number = 2
+        assessment.status = AssessmentStatus.late_submitted
+        db.commit()
+        submission = Submission(
+            id="late-retake-submission",
+            assessment_id=assessment.id,
+            submission_type=SubmissionType.text,
+            text_content="Late retake answer.",
+        )
+        db.add(submission)
+        db.commit()
+        fake_scheduler = FakeScheduler()
+        self._patch_job(monkeypatch, FakeLLMBelowThreshold(), fake_scheduler)
+
+        grade_submission_job(submission.id)
+
+        db.expire_all()
+        assessments = db.query(Assessment).filter_by(curriculum_id=curriculum.id).all()
+        assert len(assessments) == 1  # still capped at 2 total, no attempt 3

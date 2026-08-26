@@ -52,6 +52,7 @@ class APSchedulerAdapter:
         if not self._scheduler.running:
             self._scheduler.start()
         self._schedule_monthly_token_grant()
+        self._schedule_pending_midterm_recheck()
 
     def _schedule_monthly_token_grant(self) -> None:
         """Register the recurring monthly late-submission token grant.
@@ -68,6 +69,26 @@ class APSchedulerAdapter:
             hour=0,
             minute=0,
             id="grant_late_tokens_monthly",
+            replace_existing=True,
+        )
+
+    def _schedule_pending_midterm_recheck(self) -> None:
+        """Register the recurring daily pending-resources recheck.
+
+        Same shape as the monthly token grant — global, argument-less,
+        fixed-id cron — rather than a per-entry one-shot job, since Midterms
+        enter/leave the held state at unpredictable times and a single
+        poll-all-held-rows job survives future uploads with no new
+        scheduling code.
+        """
+        from app.jobs.recheck_pending_midterms_job import recheck_pending_midterms_job
+
+        self._scheduler.add_job(
+            recheck_pending_midterms_job,
+            trigger="cron",
+            hour=6,
+            minute=0,
+            id="recheck_pending_midterms_daily",
             replace_existing=True,
         )
 

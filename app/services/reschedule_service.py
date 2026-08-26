@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-from datetime import timedelta
 from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from app.config import get_settings
 from app.exceptions import InvalidStateError, InvalidTokenError, NotFoundError
 from app.interfaces.llm import LLMInterface, RescheduleClassificationRequest
 from app.interfaces.scheduler import AssessmentJobIds, SchedulerInterface
@@ -70,7 +68,10 @@ class RescheduleService:
              category_reasoning, and approved.
           7. If approved:
                - Recalculate scheduled_at via AssessmentService._calculate_scheduled_at.
-               - Derive reminder_at and due_date from new scheduled_at.
+               - Derive reminder_at and due_date from new scheduled_at — via
+                 build_assessment_dates for standalone, or _build_entry_dates
+                 (reminder anchored to due_date, not scheduled_at) when the
+                 assessment belongs to a curriculum-upload entry.
                - Call scheduler_service.reschedule_assessment() to swap APScheduler jobs.
                - Write new dates and new job IDs back to Assessment.
           8. Commit and return (RescheduleRequest, Assessment | None).
@@ -158,20 +159,21 @@ class RescheduleService:
                 .first()
             )
 
-            # Delegate schedule calculation to AssessmentService to keep the
-            # window logic in one place.
-            from app.services.assessment_service import AssessmentService
+            # Delegate schedule calculation to AssessmentService/shared date-math
+            # helpers to keep the window logic in one place.
+            from app.services.assessment_service import (
+                AssessmentService,
+                build_assessment_dates,
+            )
             new_scheduled_at = AssessmentService(
                 self.db, self.llm
             )._calculate_scheduled_at(assessment.curriculum.target_completion_date)
 
-            settings = get_settings()
-            new_reminder_at = new_scheduled_at - timedelta(
-                hours=settings.reminder_hours_before
-            )
-            new_due_date = new_scheduled_at + timedelta(
-                days=settings.assessment_due_days
-            )
+            if assessment.curriculum.entry_type is not None:
+                from app.services.curriculum_upload_service import _build_entry_dates
+                new_reminder_at, new_due_date = _build_entry_dates(new_scheduled_at)
+            else:
+                new_reminder_at, new_due_date = build_assessment_dates(new_scheduled_at)
 
             new_job_ids: AssessmentJobIds = self.scheduler_service.reschedule_assessment(
                 assessment_id=assessment_id,

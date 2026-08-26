@@ -29,8 +29,10 @@ from app.database import get_db
 from app.interfaces.email import (
     AssessmentEmailData,
     EmailInterface,
+    MidtermHoldReminderEmailData,
     ReminderEmailData,
     ResultsEmailData,
+    SyllabusEmailData,
 )
 from app.interfaces.llm import (
     AssessmentGenerationRequest,
@@ -46,6 +48,7 @@ from app.interfaces.llm import (
 )
 from app.services.assessment_service import AssessmentService
 from app.services.curriculum_service import CurriculumService
+from app.services.curriculum_upload_service import CurriculumUploadService
 from app.services.grading_service import GradingService
 from app.services.late_token_service import LateTokenService
 from app.services.reschedule_service import RescheduleService
@@ -65,6 +68,12 @@ class StubEmailAdapter:
         raise NotImplementedError("StubEmailAdapter: set RESEND_API_KEY to enable email.")
 
     def send_results_email(self, data: ResultsEmailData) -> None:
+        raise NotImplementedError("StubEmailAdapter: set RESEND_API_KEY to enable email.")
+
+    def send_syllabus_email(self, data: SyllabusEmailData) -> None:
+        raise NotImplementedError("StubEmailAdapter: set RESEND_API_KEY to enable email.")
+
+    def send_midterm_hold_reminder_email(self, data: MidtermHoldReminderEmailData) -> None:
         raise NotImplementedError("StubEmailAdapter: set RESEND_API_KEY to enable email.")
 
 
@@ -154,6 +163,13 @@ def get_late_token_service(
     db: Annotated[Session, Depends(get_db)],
 ) -> LateTokenService:
     return LateTokenService(db)
+
+
+def get_curriculum_upload_service(
+    db: Annotated[Session, Depends(get_db)],
+    scheduler_service: Annotated[SchedulerService, Depends(get_scheduler_service)],
+) -> CurriculumUploadService:
+    return CurriculumUploadService(db, _email, scheduler_service)
 
 
 def get_submission_service(

@@ -1,0 +1,101 @@
+{
+  "note_on_pending_resources": "Assessment resources are all real, external links available now — nothing pending. Midterm resources are split into 'known_now' (project description, probe_focus) and 'pending_completion' (repo URL, README, design docs, audit results) — these don't exist until the project is actually built. Fill pending_completion fields in shortly before each midterm's completion_date; leave them empty until then.",
+
+  "topics": [
+    {"topic": "JS Internals + Destructuring Refresh", "type": "assessment", "chapter": "Chapter 1: JavaScript Language & Internals", "resources": ["javascript.info (review — closures, prototypes, promises/async)", "web.dev (event loop)", "react.dev (useEffect docs — stale closures)", "MDN — Memory Management", "Chrome DevTools Memory panel (hands-on)", "Full Stack Open Part 1c (destructuring)"], "completion_date": "2026-08-15", "max_marks": 50},
+
+    {"topic": "React Rendering Behavior", "type": "assessment", "chapter": "Chapter 3: React Rendering Behavior", "resources": ["react.dev (rendering, keys, reconciliation, JSX docs)", "bigfrontend.dev/react (memoization landscape)", "Full Stack Open Part 1"], "completion_date": "2026-08-21", "max_marks": 50},
+
+    {"topic": "State Management — Context, Lifting State", "type": "assessment", "chapter": "Chapter 5: State Management", "resources": ["react.dev (lifting state, prop drilling, Context API)"], "completion_date": "2026-08-22", "max_marks": 50},
+
+    {
+      "topic": "PM System — Accessible Component Architecture",
+      "type": "midterm",
+      "chapter": "Midterm 1 — spans Chapters 3, 9",
+      "special_case": "FIRST midterm chronologically — no prior Assessments exist yet (JS Internals doesn't complete until the day after this midterm). Part 1 draws directly from Chapter 3 + Chapter 9 resources instead of the usual cumulative-Assessments rule.",
+      "resources": {
+        "known_now": ["react.dev (component/rendering resources, for Part 1)", "WAI-ARIA APG", "axe DevTools + Lighthouse", "MDN (semantic HTML, ARIA)"],
+        "pending_completion": ["project README", "repo URL", "accessibility audit results"]
+      },
+      "completion_date": "2026-08-14",
+      "max_marks": 100,
+      "probe_focus": "Defend the recursive tree component design, accessibility choices, and round-1 speed-drill rationale."
+    },
+
+    {"topic": "State Management — Redux, Normalized State", "type": "assessment", "chapter": "Chapter 5: State Management", "resources": ["Full Stack Open Part 6 (esp. 6d)", "redux.js.org (incl. \"Normalizing State Shape\")"], "completion_date": "2026-08-28", "max_marks": 50},
+
+    {"topic": "Performance Optimization I — Tree-Shaking, Event Bubbling, Synthetic Events", "type": "assessment", "chapter": "Chapter 6: React Performance Optimization", "resources": ["web.dev (\"Reduce JavaScript payloads with tree shaking\")", "webpack.js.org (Tree Shaking guide)", "MDN (\"Event bubbling and capturing\")", "javascript.info (same chapter, review)", "react.dev (\"Responding to Events\" — synthetic events)"], "completion_date": "2026-08-29", "max_marks": 50},
+
+    {"topic": "Performance Optimization II — DOM Perf, Code Splitting, Memoization, Virtualization, Bundle Analysis", "type": "assessment", "chapter": "Chapter 6: React Performance Optimization", "resources": ["MDN (DOM intro — cross-ref reflow/repaint)", "react.dev (code splitting, lazy loading, React.memo)", "web.dev (code splitting, bundle analysis)", "patterns.dev (list virtualization)", "react-window docs"], "completion_date": "2026-09-04", "max_marks": 50},
+
+    {"topic": "Custom Hooks + Rules of Hooks", "type": "assessment", "chapter": "Chapter 4: React Hooks", "resources": ["react.dev (full hooks family — useState/useReducer/useEffect/useRef/useLayoutEffect/useMemo/useCallback/useContext/useTransition/useDeferredValue/useSyncExternalStore/useId, React 19 hooks)", "Full Stack Open Part 7b (custom hooks)", "bigfrontend.dev/react (timed practice)"], "completion_date": "2026-09-06", "max_marks": 50},
+
+    {
+      "topic": "Chat App — Real-Time Reliability & State",
+      "type": "midterm",
+      "chapter": "Midterm 2 — cumulative pool: Chapters 1, 3, 4, 5, 6 (7 Assessments completed by this date)",
+      "resources": {
+        "known_now": ["cumulative: all Assessments with completion_date on/before 2026-09-13"],
+        "pending_completion": ["README", "Week 3 reliability design-decision write-up", "repo URL"]
+      },
+      "completion_date": "2026-09-13",
+      "max_marks": 100,
+      "probe_focus": "Defend the roomId/Set<roomId> data model, reconnect/session-consistency logic, and optimistic-update rollback."
+    },
+
+    {"topic": "Frontend Architecture & Patterns", "type": "assessment", "chapter": "Chapter 11: Frontend Architecture & Patterns", "resources": ["patterns.dev (component-driven architecture, common patterns)", "MDN (cross-browser behavior & responsive layout)"], "completion_date": "2026-09-11", "max_marks": 50},
+
+    {"topic": "Browser Internals — Rendering Path, Reflow/Repaint", "type": "assessment", "chapter": "Chapter 2: Browser Internals & Rendering", "resources": ["web.dev (critical rendering path)", "MDN rendering docs", "MDN (shadow DOM)", "joshwcomeau.com (stacking contexts)", "react.dev (paint timing — useLayoutEffect vs useEffect)"], "completion_date": "2026-09-12", "max_marks": 50},
+
+    {"topic": "Core Web Vitals", "type": "assessment", "chapter": "Chapter 7: Core Web Vitals", "resources": ["web.dev (LCP, CLS, INP)", "Lighthouse", "web-vitals library"], "completion_date": "2026-09-18", "max_marks": 50},
+
+    {"topic": "Network Basics", "type": "assessment", "chapter": "Chapter 8: Network Basics", "resources": ["MDN (HTTP caching, HTTP methods, cookies, localStorage/sessionStorage)", "web.dev (CDNs)", "jwt.io (JWT vs cookie-based auth)"], "completion_date": "2026-09-25", "max_marks": 50},
+
+    {"topic": "System Design Fundamentals", "type": "assessment", "chapter": "Chapter 12: System Design Fundamentals", "resources": ["\"System Design Interview\" by Alex Xu, Vol 1 (scalability, reliability patterns, databases at scale, distributed systems)", "ByteByteGo (caching/CDNs, message queues)", "Grokking System Design (educative.io — structured practice)", "own cyber-sale workflow notes (reliability patterns)"], "completion_date": "2026-09-30", "max_marks": 50},
+
+    {
+      "topic": "VS Code Extension — Phases 1-3 (Parsing, Navigation, Generation)",
+      "type": "midterm",
+      "chapter": "Midterm 3 — cumulative pool: ALL 13 Assessments (everything except Ch9, which has no standalone Assessment)",
+      "resources": {
+        "known_now": ["cumulative: all Assessments with completion_date on/before 2026-10-04 — this is the full 13-topic pool"],
+        "pending_completion": ["entity-model design doc (Wk 6)", "README", "repo URL"]
+      },
+      "completion_date": "2026-10-04",
+      "max_marks": 100,
+      "probe_focus": "Defend entity representation, the stale-link fuzzy-vs-exact tradeoff, and deterministic ordering."
+    },
+
+    {"topic": "CSS Depth", "type": "assessment", "chapter": "Chapter 10: CSS Depth", "resources": ["joshwcomeau.com (flexbox, grid, stacking contexts, CSS architecture)", "MDN (box model, cascade & specificity, container queries)"], "completion_date": "2026-10-03", "max_marks": 50},
+
+    {
+      "topic": "\"What They Know\" — Performance at Scale",
+      "type": "midterm",
+      "chapter": "Midterm 4 — cumulative pool: ALL 13 Assessments (same full pool as Midterm 3)",
+      "resources": {
+        "known_now": ["cumulative: all Assessments with completion_date on/before 2026-10-11 — full 13-topic pool"],
+        "pending_completion": ["README with real before/after Vitals numbers", "repo URL"]
+      },
+      "completion_date": "2026-10-11",
+      "max_marks": 100,
+      "probe_focus": "Defend the worker-boundary choice, why virtualization was necessary, and the specific before/after Vitals numbers."
+    },
+
+    {
+      "topic": "VS Code Extension Phase 4 — Synchronization Systems (CAPSTONE)",
+      "type": "midterm",
+      "chapter": "Capstone Midterm — cumulative pool: ALL 13 Assessments, every chapter",
+      "resources": {
+        "known_now": ["cumulative: all Assessments with completion_date on/before 2026-10-25 — full 13-topic pool"],
+        "pending_completion": ["identity-system doc (Wk 10)", "retroactive design doc (Wk 11)", "repo URL"]
+      },
+      "completion_date": "2026-10-25",
+      "max_marks": 100,
+      "probe_focus": "Defend the identity/hashing system, reconciliation logic, and orphan-recovery decision — direct rehearsal for the Amazon system-design gap."
+    }
+  ],
+
+  "chapters_with_no_standalone_assessment": [
+    {"chapter": "Chapter 9: Accessibility", "note": "No dedicated Assessment entry — per the Study Checklist's own note, finishing PM System satisfies this. Tested within Midterm 1's Part 2, using WAI-ARIA APG, axe DevTools + Lighthouse, and MDN as the resources."}
+  ]
+}

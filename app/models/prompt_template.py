@@ -10,12 +10,14 @@ from app.models._utils import utcnow
 # Valid slug values — enforced at the service layer, not at the DB level.
 #   assessment_generation   — first-attempt assessment creation
 #   retest_generation       — subsequent-attempt assessment creation (receives weak_areas)
+#   midterm_generation      — two-part Midterm exam creation (curriculum-upload only)
 #   grading                 — submission grading
 #   reschedule_classification — excuse classification (Claude outputs category only)
 VALID_SLUGS = frozenset(
     {
         "assessment_generation",
         "retest_generation",
+        "midterm_generation",
         "grading",
         "reschedule_classification",
         "curriculum_analysis",   # optional enrichment in CurriculumService.create()

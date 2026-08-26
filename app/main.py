@@ -17,6 +17,7 @@ logging.getLogger("apscheduler").setLevel(logging.INFO)
 from app.api.v1 import (
     assessment,
     curriculum,
+    curriculum_upload,
     grading,
     health,
     late_tokens,
@@ -87,4 +88,7 @@ app.include_router(submission.router, prefix="/api/v1/submissions", tags=["submi
 app.include_router(grading.router, prefix="/api/v1/submissions", tags=["grading"])
 app.include_router(reschedule.router, prefix="/api/v1/assessments", tags=["reschedule"])
 app.include_router(late_tokens.router, prefix="/api/v1/late-tokens", tags=["late-tokens"])
+app.include_router(
+    curriculum_upload.router, prefix="/api/v1/curriculum-uploads", tags=["curriculum-upload"]
+)
 app.include_router(health.router, prefix="/health", tags=["health"])

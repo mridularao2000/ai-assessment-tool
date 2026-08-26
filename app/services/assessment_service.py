@@ -6,18 +6,43 @@ from datetime import date, datetime, timedelta
 
 from sqlalchemy.orm import Session, joinedload
 
-from app.config import get_settings
 from app.exceptions import InvalidStateError, InvalidTokenError, NotFoundError
 from app.interfaces.llm import (
     AssessmentGenerationRequest,
     LLMInterface,
+    MidtermGenerationRequest,
+    MidtermRetestGenerationRequest,
     RetestGenerationRequest,
 )
 from app.models.assessment import Assessment, AssessmentStatus
-from app.models.curriculum import Curriculum, CurriculumStatus
+from app.models.curriculum import Curriculum, CurriculumEntryType, CurriculumStatus
 from app.models.grade import Grade
 from app.models.prompt_template import PromptTemplate
 from app.utils.token_auth import generate_submission_token, verify_submission_token
+
+
+def calculate_scheduled_at(target_completion_date: date) -> datetime:
+    """Pick the single send instant within target_completion_date+1..+3, 9am.
+
+    Free function (not just an AssessmentService method) so callers that
+    need the date math without an LLM instance — e.g.
+    CurriculumUploadService scheduling upload entries before their content
+    is generated — can use the exact same logic.
+    """
+    offset_days = random.randint(1, 3)
+    scheduled_date = target_completion_date + timedelta(days=offset_days)
+    return datetime(
+        scheduled_date.year,
+        scheduled_date.month,
+        scheduled_date.day,
+        9, 0, 0,  # fixed 9 AM UTC
+    )
+
+
+def build_assessment_dates(scheduled_at: datetime) -> tuple[datetime, datetime]:
+    reminder_at = scheduled_at - timedelta(days=1)   # 1 day before
+    due_date = scheduled_at + timedelta(days=2)      # 2-day submission window
+    return reminder_at, due_date
 
 
 class AssessmentService:
@@ -38,24 +63,10 @@ class AssessmentService:
     # ── Internal helpers ───────────────────────────────────────────────────────
 
     def _calculate_scheduled_at(self, target_completion_date: date) -> datetime:
-        settings = get_settings()
-
-        offset_days = random.randint(1, 3)
-
-        scheduled_date = target_completion_date + timedelta(days=offset_days)
-
-        return datetime(
-            scheduled_date.year,
-            scheduled_date.month,
-            scheduled_date.day,
-            9, 0, 0,  # fixed 9 AM UTC
-        )
+        return calculate_scheduled_at(target_completion_date)
 
     def _build_dates(self, scheduled_at: datetime) -> tuple[datetime, datetime]:
-        reminder_at = scheduled_at - timedelta(days=1)   # 1 day before
-        due_date = scheduled_at + timedelta(days=2)      # 2-day submission window
-
-        return reminder_at, due_date
+        return build_assessment_dates(scheduled_at)
 
     def _fetch_prompt(self, slug: str) -> PromptTemplate:
         """Return the active PromptTemplate for slug, or raise NotFoundError."""
@@ -149,11 +160,22 @@ class AssessmentService:
              to obtain attempt_number, weak_areas, and mastery_score.
           3. Fetch the active PromptTemplate where slug='retest_generation'.
           4. Call llm.generate_retest() with topic, extracted_content,
-             previous_mastery_score, weak_areas, and attempt_number + 1.
-          5. Repeat scheduling + token generation logic from create_for_curriculum.
+             previous_mastery_score, weak_areas, and attempt_number + 1 —
+             plus resources (Assessment-type entries only, so web_search/
+             web_fetch grounding still applies on retry, not just attempt 1).
+          5. Repeat scheduling + token generation logic from
+             create_for_curriculum (standalone) or the entry-specific date
+             math (curriculum.entry_type is not None — same reminder-
+             anchored-to-due_date rule as a first attempt, not standalone's).
           6. Persist Assessment with attempt_number = previous_attempt + 1.
           7. Return the Assessment.
              Caller must pass it to SchedulerService.schedule_assessment_jobs().
+
+        Midterm-type curricula take a separate branch: a fresh two-part
+        exam (both Part 1 and Part 2 regenerated) via generate_midterm_retest(),
+        targeted at the weak areas identified from grading the previous
+        attempt's two parts — same eager-generation and 2-attempt-cap
+        mechanics as the single-part case, just two-part content.
 
         Raises:
             NotFoundError: if curriculum, grade, or prompt template not found.
@@ -168,30 +190,97 @@ class AssessmentService:
             raise NotFoundError(f"Grade {previous_grade_id!r} not found.")
 
         previous_attempt = grade.submission.assessment.attempt_number
+        is_entry = curriculum.entry_type is not None
 
-        prompt_template = self._fetch_prompt("retest_generation")
+        if curriculum.entry_type == CurriculumEntryType.midterm:
+            assessment = self._create_midterm_retest(curriculum, grade, previous_attempt)
+        else:
+            prompt_template = self._fetch_prompt("retest_generation")
+            resources = [r.source_ref for r in curriculum.resources] if is_entry else None
 
-        result = self.llm.generate_retest(
-            RetestGenerationRequest(
+            result = self.llm.generate_retest(
+                RetestGenerationRequest(
+                    topic=curriculum.topic,
+                    curriculum_content=curriculum.extracted_content or "",
+                    prompt_template_body=prompt_template.body,
+                    previous_mastery_score=grade.mastery_score,
+                    weak_areas=grade.weak_areas or [],
+                    attempt_number=previous_attempt + 1,
+                    resources=resources,
+                )
+            )
+
+            scheduled_at = self._calculate_scheduled_at(curriculum.target_completion_date)
+            if is_entry:
+                from app.services.curriculum_upload_service import _build_entry_dates
+                reminder_at, due_date = _build_entry_dates(scheduled_at)
+            else:
+                reminder_at, due_date = self._build_dates(scheduled_at)
+
+            assessment_id = str(uuid.uuid4())
+            assessment = Assessment(
+                id=assessment_id,
+                curriculum_id=curriculum_id,
+                attempt_number=previous_attempt + 1,
+                assessment_text=result.assessment_text,
+                rubric=result.rubric,
+                duration_minutes=result.duration_minutes,
+                generation_prompt_id=prompt_template.id,
+                scheduled_at=scheduled_at,
+                reminder_at=reminder_at,
+                due_date=due_date,
+                status=AssessmentStatus.scheduled,
+                submission_token=generate_submission_token(assessment_id),
+            )
+            self.db.add(assessment)
+
+        self.db.commit()
+        self.db.refresh(assessment)
+
+        return assessment
+
+    def _create_midterm_retest(
+        self, curriculum: Curriculum, grade: Grade, previous_attempt: int
+    ) -> Assessment:
+        """Build (but don't commit) a fresh two-part retest Assessment for a
+        Midterm-type curriculum, targeted at the previous attempt's weak
+        areas. Shares pool/resource assembly with generate_midterm_content()
+        via _assemble_midterm_pool().
+        """
+        from app.services.curriculum_upload_service import _build_entry_dates
+
+        detail = curriculum.midterm_detail
+        prompt_template = self._fetch_prompt("midterm_retest_generation")
+        cumulative_pool_content, own_resources = self._assemble_midterm_pool(curriculum)
+
+        result = self.llm.generate_midterm_retest(
+            MidtermRetestGenerationRequest(
                 topic=curriculum.topic,
-                curriculum_content=curriculum.extracted_content or "",
-                prompt_template_body=prompt_template.body,
-                previous_mastery_score=grade.mastery_score,
+                cumulative_pool_content=cumulative_pool_content,
+                own_resources=own_resources,
+                probe_focus=detail.probe_focus,
+                part1_max_marks=detail.part1_max_marks,
+                part2_max_marks=detail.part2_max_marks,
+                previous_part1_score=grade.part1_score or 0.0,
+                previous_part2_score=grade.part2_score or 0.0,
                 weak_areas=grade.weak_areas or [],
                 attempt_number=previous_attempt + 1,
+                prompt_template_body=prompt_template.body,
             )
         )
 
         scheduled_at = self._calculate_scheduled_at(curriculum.target_completion_date)
-        reminder_at, due_date = self._build_dates(scheduled_at)
+        reminder_at, due_date = _build_entry_dates(scheduled_at)
 
         assessment_id = str(uuid.uuid4())
         assessment = Assessment(
             id=assessment_id,
-            curriculum_id=curriculum_id,
+            curriculum_id=curriculum.id,
             attempt_number=previous_attempt + 1,
-            assessment_text=result.assessment_text,
-            rubric=result.rubric,
+            part1_text=result.part1_text,
+            part1_rubric=result.part1_rubric,
+            part2_text=result.part2_text,
+            part2_rubric=result.part2_rubric,
             duration_minutes=result.duration_minutes,
             generation_prompt_id=prompt_template.id,
             scheduled_at=scheduled_at,
@@ -201,10 +290,95 @@ class AssessmentService:
             submission_token=generate_submission_token(assessment_id),
         )
         self.db.add(assessment)
-        self.db.commit()
-        self.db.refresh(assessment)
-
         return assessment
+
+    def _assemble_midterm_pool(self, curriculum: Curriculum) -> tuple[str, list[str]]:
+        """Shared Part 1 pool / Part 2 resource assembly, used by both first
+        attempts (generate_midterm_content) and retests (_create_midterm_retest).
+        """
+        from app.services.curriculum_upload_service import assemble_part1_pool
+
+        detail = curriculum.midterm_detail
+        qualifying, used_fallback = assemble_part1_pool(self.db, curriculum)
+        if used_fallback:
+            cumulative_pool_content = "\n".join(f"- {r}" for r in detail.known_now)
+        else:
+            cumulative_pool_content = "\n\n".join(
+                f"[{e.chapter_label}] {e.topic}\n"
+                f"Resources: {', '.join(r.source_ref for r in e.resources)}"
+                for e in qualifying
+            )
+
+        own_resources = list(detail.known_now) + [
+            v for v in detail.pending_completion_slots.values() if v
+        ]
+        return cumulative_pool_content, own_resources
+
+    def generate_assessment_content(self, assessment: Assessment) -> None:
+        """Populate assessment_text/rubric/duration_minutes on an
+        already-scheduled, curriculum-upload Assessment-type Assessment row.
+
+        Called at send-time (see send_assessment_job), not eagerly at
+        scheduling time — keeps resource-grounding maximally current and
+        avoids spending LLM calls on exams that are weeks/months away.
+        Mutates and flushes; caller commits.
+
+        Raises:
+            NotFoundError: if the 'assessment_generation' prompt template
+                           is missing.
+            LLMValidationError: if generation fails after all retries.
+        """
+        curriculum = assessment.curriculum
+        prompt_template = self._fetch_prompt("assessment_generation")
+        resources = [r.source_ref for r in curriculum.resources]
+
+        result = self.llm.generate_assessment(
+            AssessmentGenerationRequest(
+                topic=curriculum.topic,
+                curriculum_content=curriculum.extracted_content or "",
+                prompt_template_body=prompt_template.body,
+                resources=resources,
+            )
+        )
+        assessment.assessment_text = result.assessment_text
+        assessment.rubric = result.rubric
+        assessment.duration_minutes = result.duration_minutes
+        assessment.generation_prompt_id = prompt_template.id
+        self.db.flush()
+
+    def generate_midterm_content(self, assessment: Assessment) -> None:
+        """Populate part1_text/part1_rubric/part2_text/part2_rubric on an
+        already-scheduled Midterm-type Assessment row. Same send-time
+        timing rationale as generate_assessment_content().
+
+        Raises:
+            NotFoundError: if the 'midterm_generation' prompt template is
+                           missing.
+            LLMValidationError: if generation fails after all retries.
+        """
+        curriculum = assessment.curriculum
+        detail = curriculum.midterm_detail
+        prompt_template = self._fetch_prompt("midterm_generation")
+        cumulative_pool_content, own_resources = self._assemble_midterm_pool(curriculum)
+
+        result = self.llm.generate_midterm(
+            MidtermGenerationRequest(
+                topic=curriculum.topic,
+                cumulative_pool_content=cumulative_pool_content,
+                own_resources=own_resources,
+                probe_focus=detail.probe_focus,
+                part1_max_marks=detail.part1_max_marks,
+                part2_max_marks=detail.part2_max_marks,
+                prompt_template_body=prompt_template.body,
+            )
+        )
+        assessment.part1_text = result.part1_text
+        assessment.part1_rubric = result.part1_rubric
+        assessment.part2_text = result.part2_text
+        assessment.part2_rubric = result.part2_rubric
+        assessment.duration_minutes = result.duration_minutes
+        assessment.generation_prompt_id = prompt_template.id
+        self.db.flush()
 
     def get_by_id_and_token(self, assessment_id: str, token: str) -> Assessment:
         """Load an Assessment by ID and verify its submission token.

@@ -57,7 +57,7 @@ def adapter(monkeypatch):
 def _fake_response(text: str) -> MagicMock:
     """Build a fake anthropic.Message with one text content block."""
     msg = MagicMock()
-    msg.content = [MagicMock(text=text)]
+    msg.content = [MagicMock(type="text", text=text)]
     return msg
 
 

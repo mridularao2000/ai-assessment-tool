@@ -6,8 +6,9 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.config import get_settings
 from app.exceptions import IngestionError, InvalidStateError, NotFoundError
-from app.interfaces.llm import GradingRequest, LLMInterface
+from app.interfaces.llm import GradingRequest, LLMInterface, MidtermGradingRequest
 from app.models.assessment import Assessment, AssessmentStatus
+from app.models.curriculum import Curriculum, CurriculumEntryType
 from app.models.grade import Grade
 from app.models.prompt_template import PromptTemplate
 from app.models.submission import Submission, SubmissionType
@@ -42,15 +43,19 @@ class GradingService:
                github_url → github_ingestor.fetch_repo_content(submission.github_url)
                text       → submission.text_content (used directly)
                file       → read file bytes from submission.file_path on disk
-          3. Fetch the active PromptTemplate where slug='grading'.
-          4. Call llm.grade_submission() with:
-               assessment_text, rubric, curriculum_content,
-               submission_content, prompt_template_body
-             → GradingResult(mastery_score, weak_areas, overall_feedback)
-          5. Persist Grade with mastery_score, weak_areas, overall_feedback,
-             and grading_prompt_id.
-          6. Update Assessment.status → completed.
-          7. Return the Grade.
+             For a Midterm, this is Part 2's content — Part 1's is
+             submission.part1_text_content directly (always plain text).
+          3. Midterm-type curricula branch to _grade_midterm() (fetches the
+             'midterm_grading' template, calls llm.grade_midterm_submission()
+             with resources so Part 2 claims can be checked against the
+             project's real artifacts). Everything else uses the single-part
+             'grading' template + llm.grade_submission(), as before.
+          4. Persist Grade — mastery_score/weak_areas/overall_feedback always;
+             score_earned/max_marks additionally for entries (null for
+             standalone, which doesn't participate in GPA); part1_score/
+             part2_score additionally for Midterms.
+          5. Update Assessment.status → completed.
+          6. Return the Grade.
 
         Raises:
             NotFoundError: if submission_id does not exist.
@@ -83,6 +88,8 @@ class GradingService:
         curriculum = assessment.curriculum
 
         # ── 2. Resolve submission content ──────────────────────────────────────
+        # For a Midterm this is Part 2's content; for everything else it's
+        # the whole submission.
         if submission.submission_type == SubmissionType.github_url:
             try:
                 from app.ingestors.github_ingestor import fetch_repo_content
@@ -96,45 +103,115 @@ class GradingService:
         else:
             submission_content = self._read_file(submission.file_path)
 
-        # ── 3. Fetch active grading prompt template ────────────────────────────
+        # ── 3-4. Grade + build Grade fields (branches by entry_type) ───────────
+        if curriculum.entry_type == CurriculumEntryType.midterm:
+            grade = self._grade_midterm(submission, assessment, curriculum, submission_content)
+        else:
+            prompt_template = (
+                self.db.query(PromptTemplate)
+                .filter(
+                    PromptTemplate.slug == "grading",
+                    PromptTemplate.is_active.is_(True),
+                )
+                .first()
+            )
+            if prompt_template is None:
+                raise NotFoundError("No active 'grading' prompt template found.")
+
+            grading_result = self.llm.grade_submission(
+                GradingRequest(
+                    assessment_text=assessment.assessment_text or "",
+                    rubric=assessment.rubric or "",
+                    curriculum_content=curriculum.extracted_content or "",
+                    submission_content=submission_content,
+                    prompt_template_body=prompt_template.body,
+                )
+            )
+
+            is_entry = curriculum.entry_type is not None
+            score_earned = (
+                grading_result.mastery_score / 100.0 * (curriculum.max_marks or 0.0)
+                if is_entry else None
+            )
+            max_marks = curriculum.max_marks if is_entry else None
+
+            grade = Grade(
+                submission_id=submission_id,
+                mastery_score=grading_result.mastery_score,
+                weak_areas=grading_result.weak_areas,
+                overall_feedback=grading_result.overall_feedback,
+                grading_prompt_id=prompt_template.id,
+                score_earned=score_earned,
+                max_marks=max_marks,
+            )
+            self.db.add(grade)
+            self.db.flush()
+
+        # ── 5. Transition assessment → completed ───────────────────────────────
+        assessment.status = AssessmentStatus.completed
+        self.db.commit()
+        self.db.refresh(grade)
+
+        return grade
+
+    def _grade_midterm(
+        self, submission: Submission, assessment: Assessment, curriculum: Curriculum, part2_content: str
+    ) -> Grade:
+        """Grade both parts of a Midterm submission and build (but don't
+        commit) the resulting Grade row.
+
+        mastery_score is back-derived from score_earned/max_marks purely so
+        the existing mastery_threshold pass/fail comparison in
+        grade_submission_job works identically for Midterms without a branch.
+        """
         prompt_template = (
             self.db.query(PromptTemplate)
             .filter(
-                PromptTemplate.slug == "grading",
+                PromptTemplate.slug == "midterm_grading",
                 PromptTemplate.is_active.is_(True),
             )
             .first()
         )
         if prompt_template is None:
-            raise NotFoundError("No active 'grading' prompt template found.")
+            raise NotFoundError("No active 'midterm_grading' prompt template found.")
 
-        # ── 4. Grade via LLM ───────────────────────────────────────────────────
-        grading_result = self.llm.grade_submission(
-            GradingRequest(
-                assessment_text=assessment.assessment_text or "",
-                rubric=assessment.rubric or "",
-                curriculum_content=curriculum.extracted_content or "",
-                submission_content=submission_content,
+        detail = curriculum.midterm_detail
+        resources = list(detail.known_now) + [
+            v for v in detail.pending_completion_slots.values() if v
+        ]
+
+        grading_result = self.llm.grade_midterm_submission(
+            MidtermGradingRequest(
+                part1_text=assessment.part1_text or "",
+                part1_rubric=assessment.part1_rubric or "",
+                part2_text=assessment.part2_text or "",
+                part2_rubric=assessment.part2_rubric or "",
+                part1_max_marks=detail.part1_max_marks,
+                part2_max_marks=detail.part2_max_marks,
+                part1_submission_content=submission.part1_text_content or "",
+                part2_submission_content=part2_content,
                 prompt_template_body=prompt_template.body,
+                resources=resources,
             )
         )
 
-        # ── 5. Persist Grade ───────────────────────────────────────────────────
+        max_marks = curriculum.max_marks or (detail.part1_max_marks + detail.part2_max_marks)
+        score_earned = grading_result.part1_score + grading_result.part2_score
+        mastery_score = (score_earned / max_marks * 100.0) if max_marks else 0.0
+
         grade = Grade(
-            submission_id=submission_id,
-            mastery_score=grading_result.mastery_score,
+            submission_id=submission.id,
+            mastery_score=mastery_score,
             weak_areas=grading_result.weak_areas,
             overall_feedback=grading_result.overall_feedback,
             grading_prompt_id=prompt_template.id,
+            part1_score=grading_result.part1_score,
+            part2_score=grading_result.part2_score,
+            score_earned=score_earned,
+            max_marks=max_marks,
         )
         self.db.add(grade)
         self.db.flush()
-
-        # ── 6. Transition assessment → completed ───────────────────────────────
-        assessment.status = AssessmentStatus.completed
-        self.db.commit()
-        self.db.refresh(grade)
-
         return grade
 
     # ── Internal helpers ───────────────────────────────────────────────────────

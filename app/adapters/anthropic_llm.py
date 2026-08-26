@@ -6,6 +6,7 @@ from typing import Any
 
 import anthropic
 
+from app.adapters.nonfetchable_resources import build_resource_guidance
 from app.config import get_settings
 from app.interfaces.llm import (
     AssessmentGenerationRequest,
@@ -16,11 +17,32 @@ from app.interfaces.llm import (
     GradingResult,
     LLMUnavailableError,
     LLMValidationError,
+    MidtermGenerationRequest,
+    MidtermGenerationResult,
+    MidtermGradingRequest,
+    MidtermGradingResult,
+    MidtermRetestGenerationRequest,
     RescheduleClassificationRequest,
     RescheduleClassificationResult,
     RescheduleCategory,
     RetestGenerationRequest,
 )
+
+# Server-side tools (see the claude-api skill for the current spec — these
+# _20260209 variants support Opus 5/4.8/4.7/4.6, Sonnet 5, and Sonnet 4.6;
+# the project's configured model qualifies). No beta header required.
+# Only attached to calls that pass resources — never to standalone calls.
+WEB_SEARCH_TOOL: dict[str, Any] = {
+    "type": "web_search_20260209",
+    "name": "web_search",
+    "max_uses": 8,
+}
+WEB_FETCH_TOOL: dict[str, Any] = {
+    "type": "web_fetch_20260209",
+    "name": "web_fetch",
+    "max_uses": 8,
+    "max_content_tokens": 20000,
+}
 
 
 class AnthropicLLMAdapter:
@@ -37,21 +59,47 @@ class AnthropicLLMAdapter:
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
-    def _call(self, prompt: str, max_tokens: int = 4096) -> str:
-        """Call Claude and return the text response, mapping SDK errors."""
+    def _call(
+        self,
+        prompt: str,
+        max_tokens: int = 4096,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> str:
+        """Call Claude and return the text response, mapping SDK errors.
+
+        tools is opt-in — omitted entirely for standalone call sites, so their
+        request shape (and therefore response.content shape) is unchanged.
+        """
         try:
-            message = self._client.messages.create(
+            kwargs: dict[str, Any] = dict(
                 model=self._model,
                 max_tokens=max_tokens,
                 messages=[{"role": "user", "content": prompt}],
             )
-            return message.content[0].text
+            if tools:
+                kwargs["tools"] = tools
+            message = self._client.messages.create(**kwargs)
+            return self._extract_text(message.content)
         except (anthropic.APITimeoutError, anthropic.APIConnectionError) as exc:
             raise LLMUnavailableError(f"Claude API unreachable: {exc}") from exc
         except anthropic.RateLimitError as exc:
             raise LLMUnavailableError(f"Claude rate limit exhausted: {exc}") from exc
         except anthropic.APIStatusError as exc:
             raise LLMUnavailableError(f"Claude API error {exc.status_code}: {exc.message}") from exc
+
+    def _extract_text(self, content: list) -> str:
+        """Return the concatenated text block(s) from a response.
+
+        With no tools passed, content is always [text_block], same as the
+        old `content[0].text`. With web_search/web_fetch enabled, content can
+        contain server_tool_use/web_search_tool_result/web_fetch_tool_result
+        blocks ahead of the final text block(s), so position 0 can no longer
+        be assumed to be text.
+        """
+        parts = [block.text for block in content if getattr(block, "type", None) == "text"]
+        if not parts:
+            raise LLMValidationError(f"No text block in response content: {content!r}")
+        return "\n".join(parts)
 
     def _parse_json(self, text: str) -> dict[str, Any]:
         """Extract and parse JSON from a Claude response."""
@@ -120,10 +168,12 @@ class AnthropicLLMAdapter:
                 req.prompt_template_body,
                 topic=req.topic,
                 curriculum_content=req.curriculum_content,
+                resource_guidance=build_resource_guidance(req.resources or []),
             )
             if attempt > 0:
                 prompt += "\n\nReturn ONLY valid JSON with no extra text."
-            raw = self._call(prompt, max_tokens=8192)
+            tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL] if req.resources else None
+            raw = self._call(prompt, max_tokens=8192, tools=tools)
             data = self._parse_json(raw)
             try:
                 return AssessmentGenerationResult(
@@ -133,6 +183,38 @@ class AnthropicLLMAdapter:
                 )
             except (KeyError, TypeError, ValueError) as exc:
                 raise LLMValidationError(f"generate_assessment schema mismatch: {exc}\n\nData: {data}") from exc
+
+        return self._retry(_attempt, request)
+
+    def generate_midterm(
+        self, request: MidtermGenerationRequest
+    ) -> MidtermGenerationResult:
+        def _attempt(req: MidtermGenerationRequest, attempt: int) -> MidtermGenerationResult:
+            prompt = self._render(
+                req.prompt_template_body,
+                topic=req.topic,
+                cumulative_pool_content=req.cumulative_pool_content,
+                own_resources_list="\n".join(f"- {r}" for r in req.own_resources) or "(none)",
+                resource_guidance=build_resource_guidance(req.own_resources),
+                probe_focus=req.probe_focus or "(not specified)",
+                part1_max_marks=req.part1_max_marks,
+                part2_max_marks=req.part2_max_marks,
+            )
+            if attempt > 0:
+                prompt += "\n\nReturn ONLY valid JSON with no extra text."
+            tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL] if req.own_resources else None
+            raw = self._call(prompt, max_tokens=8192, tools=tools)
+            data = self._parse_json(raw)
+            try:
+                return MidtermGenerationResult(
+                    part1_text=str(data["part1_text"]),
+                    part1_rubric=str(data["part1_rubric"]),
+                    part2_text=str(data["part2_text"]),
+                    part2_rubric=str(data["part2_rubric"]),
+                    duration_minutes=int(data["duration_minutes"]),
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise LLMValidationError(f"generate_midterm schema mismatch: {exc}\n\nData: {data}") from exc
 
         return self._retry(_attempt, request)
 
@@ -147,10 +229,12 @@ class AnthropicLLMAdapter:
                 previous_mastery_score=req.previous_mastery_score,
                 weak_areas=", ".join(req.weak_areas),
                 attempt_number=req.attempt_number,
+                resource_guidance=build_resource_guidance(req.resources or []),
             )
             if attempt > 0:
                 prompt += "\n\nReturn ONLY valid JSON with no extra text."
-            raw = self._call(prompt, max_tokens=8192)
+            tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL] if req.resources else None
+            raw = self._call(prompt, max_tokens=8192, tools=tools)
             data = self._parse_json(raw)
             try:
                 return AssessmentGenerationResult(
@@ -160,6 +244,42 @@ class AnthropicLLMAdapter:
                 )
             except (KeyError, TypeError, ValueError) as exc:
                 raise LLMValidationError(f"generate_retest schema mismatch: {exc}\n\nData: {data}") from exc
+
+        return self._retry(_attempt, request)
+
+    def generate_midterm_retest(
+        self, request: MidtermRetestGenerationRequest
+    ) -> MidtermGenerationResult:
+        def _attempt(req: MidtermRetestGenerationRequest, attempt: int) -> MidtermGenerationResult:
+            prompt = self._render(
+                req.prompt_template_body,
+                topic=req.topic,
+                cumulative_pool_content=req.cumulative_pool_content,
+                own_resources_list="\n".join(f"- {r}" for r in req.own_resources) or "(none)",
+                resource_guidance=build_resource_guidance(req.own_resources),
+                probe_focus=req.probe_focus or "(not specified)",
+                part1_max_marks=req.part1_max_marks,
+                part2_max_marks=req.part2_max_marks,
+                previous_part1_score=req.previous_part1_score,
+                previous_part2_score=req.previous_part2_score,
+                weak_areas=", ".join(req.weak_areas),
+                attempt_number=req.attempt_number,
+            )
+            if attempt > 0:
+                prompt += "\n\nReturn ONLY valid JSON with no extra text."
+            tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL] if req.own_resources else None
+            raw = self._call(prompt, max_tokens=8192, tools=tools)
+            data = self._parse_json(raw)
+            try:
+                return MidtermGenerationResult(
+                    part1_text=str(data["part1_text"]),
+                    part1_rubric=str(data["part1_rubric"]),
+                    part2_text=str(data["part2_text"]),
+                    part2_rubric=str(data["part2_rubric"]),
+                    duration_minutes=int(data["duration_minutes"]),
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise LLMValidationError(f"generate_midterm_retest schema mismatch: {exc}\n\nData: {data}") from exc
 
         return self._retry(_attempt, request)
 
@@ -187,6 +307,47 @@ class AnthropicLLMAdapter:
                 )
             except (KeyError, TypeError, ValueError) as exc:
                 raise LLMValidationError(f"grade_submission schema mismatch: {exc}\n\nData: {data}") from exc
+
+        return self._retry(_attempt, request)
+
+    def grade_midterm_submission(self, request: MidtermGradingRequest) -> MidtermGradingResult:
+        def _attempt(req: MidtermGradingRequest, attempt: int) -> MidtermGradingResult:
+            prompt = self._render(
+                req.prompt_template_body,
+                part1_text=req.part1_text,
+                part1_rubric=req.part1_rubric,
+                part2_text=req.part2_text,
+                part2_rubric=req.part2_rubric,
+                part1_max_marks=req.part1_max_marks,
+                part2_max_marks=req.part2_max_marks,
+                part1_submission_content=req.part1_submission_content,
+                part2_submission_content=req.part2_submission_content,
+                resource_guidance=build_resource_guidance(req.resources or []),
+            )
+            if attempt > 0:
+                prompt += "\n\nReturn ONLY valid JSON with no extra text."
+            tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL] if req.resources else None
+            raw = self._call(prompt, max_tokens=4096, tools=tools)
+            data = self._parse_json(raw)
+            try:
+                part1_score = float(data["part1_score"])
+                part2_score = float(data["part2_score"])
+                if not (0.0 <= part1_score <= req.part1_max_marks):
+                    raise ValueError(
+                        f"part1_score {part1_score} out of range 0-{req.part1_max_marks}"
+                    )
+                if not (0.0 <= part2_score <= req.part2_max_marks):
+                    raise ValueError(
+                        f"part2_score {part2_score} out of range 0-{req.part2_max_marks}"
+                    )
+                return MidtermGradingResult(
+                    part1_score=part1_score,
+                    part2_score=part2_score,
+                    weak_areas=list(data["weak_areas"]),
+                    overall_feedback=str(data["overall_feedback"]),
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise LLMValidationError(f"grade_midterm_submission schema mismatch: {exc}\n\nData: {data}") from exc
 
         return self._retry(_attempt, request)
 

@@ -25,7 +25,10 @@ logger = logging.getLogger(__name__)
 #
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Variables: {topic}, {curriculum_content}
+# Variables: {topic}, {curriculum_content}, {resource_guidance}
+# resource_guidance is "" for standalone curricula (unchanged rendering) and
+# a per-resource search-then-fetch / general-knowledge instruction block for
+# curriculum-upload Assessment-type entries.
 _ASSESSMENT_GENERATION = """\
 You are an expert technical assessment designer for a software engineering \
 learning platform.
@@ -37,6 +40,8 @@ Topic: {topic}
 
 Curriculum Materials (what the student studied):
 {curriculum_content}
+
+{resource_guidance}
 
 IMPORTANT — choose the right assessment FORMAT based on the curriculum:
 
@@ -101,7 +106,10 @@ Return ONLY the JSON object. Do not include any other text before or after it.\
 """
 
 # Variables: {topic}, {curriculum_content}, {previous_mastery_score},
-#            {weak_areas}, {attempt_number}
+#            {weak_areas}, {attempt_number}, {resource_guidance}
+# resource_guidance is "" for standalone curricula (unchanged rendering) and
+# a per-resource search-then-fetch / general-knowledge instruction block for
+# curriculum-upload Assessment-type entries retaking their exam.
 _RETEST_GENERATION = """\
 You are an expert technical assessment designer for a software engineering \
 learning platform.
@@ -113,6 +121,8 @@ Topic: {topic}
 
 Curriculum Materials:
 {curriculum_content}
+
+{resource_guidance}
 
 Previous Attempt Results:
 - Attempt number: {attempt_number}
@@ -138,6 +148,155 @@ Respond with a single JSON object containing exactly these fields:
 }}
 
 Set duration_minutes based on the complexity of the weak areas (60–120 minutes).
+Return ONLY the JSON object. Do not include any other text before or after it.\
+"""
+
+# Variables: {topic}, {cumulative_pool_content}, {own_resources_list},
+#            {resource_guidance}, {probe_focus}, {part1_max_marks},
+#            {part2_max_marks}
+_MIDTERM_GENERATION = """\
+You are an expert technical assessment designer for a software engineering \
+learning platform, designing a two-part Midterm exam.
+
+Project: {topic}
+
+PART 1 — small coding/implementation questions ({part1_max_marks} marks)
+Draw these from everything the student has studied and been assessed on up \
+to this point — cumulative, not just this project's own material:
+{cumulative_pool_content}
+
+Part 1 should be SHORT, targeted questions (or a small coding exercise) that \
+confirm retained understanding of that cumulative material. Do not require \
+fetching those resources again — they were already covered and assessed \
+earlier; draw on your knowledge of them.
+
+PART 2 — probing the actual project submission ({part2_max_marks} marks)
+This part is about the real decisions made in the project itself. Ground it \
+in the project's own resources listed below:
+{own_resources_list}
+
+{resource_guidance}
+
+Probe focus for Part 2: {probe_focus}
+
+Part 2 should ask the student to defend specific decisions they made in the \
+project — not generic questions about the technology in the abstract.
+
+Respond with a single JSON object containing exactly these fields:
+{{
+  "part1_text": "The full Part 1 exam text presented to the student. Use markdown formatting, numbered questions.",
+  "part1_rubric": "Marking rubric for Part 1 — per-question expected answers with full/partial/no marks, totalling {part1_max_marks}.",
+  "part2_text": "The full Part 2 exam text presented to the student. Use markdown formatting, numbered questions tied to the probe focus.",
+  "part2_rubric": "Marking rubric for Part 2 — per-question expected answers with full/partial/no marks, totalling {part2_max_marks}.",
+  "duration_minutes": 120
+}}
+
+Return ONLY the JSON object. Do not include any other text before or after it.\
+"""
+
+# Variables: {topic}, {cumulative_pool_content}, {own_resources_list},
+#            {resource_guidance}, {probe_focus}, {part1_max_marks},
+#            {part2_max_marks}, {previous_part1_score}, {previous_part2_score},
+#            {weak_areas}, {attempt_number}
+_MIDTERM_RETEST_GENERATION = """\
+You are an expert technical assessment designer for a software engineering \
+learning platform, designing a RETAKE of a two-part Midterm exam.
+
+Project: {topic}
+
+The student did not pass on attempt {attempt_number}. Previous scores:
+- Part 1: {previous_part1_score}/{part1_max_marks}
+- Part 2: {previous_part2_score}/{part2_max_marks}
+- Identified weak areas: {weak_areas}
+
+PART 1 — small coding/implementation questions ({part1_max_marks} marks)
+Draw these from everything the student has studied and been assessed on up \
+to this point — cumulative, not just this project's own material:
+{cumulative_pool_content}
+
+Use different questions from the previous attempt, focused primarily on the \
+identified weak areas, while still confirming retained understanding of the \
+broader cumulative material.
+
+PART 2 — probing the actual project submission ({part2_max_marks} marks)
+This part is about the real decisions made in the project itself. Ground it \
+in the project's own resources listed below:
+{own_resources_list}
+
+{resource_guidance}
+
+Probe focus for Part 2: {probe_focus}
+
+Ask about different aspects of the project than a first attempt would, \
+weighted toward the identified weak areas, while still asking the student \
+to defend specific real decisions — not generic questions about the \
+technology in the abstract.
+
+Respond with a single JSON object containing exactly these fields:
+{{
+  "part1_text": "The full Part 1 retest text presented to the student. Use markdown formatting, numbered questions.",
+  "part1_rubric": "Marking rubric for Part 1 — per-question expected answers with full/partial/no marks, totalling {part1_max_marks}.",
+  "part2_text": "The full Part 2 retest text presented to the student. Use markdown formatting, numbered questions tied to the probe focus.",
+  "part2_rubric": "Marking rubric for Part 2 — per-question expected answers with full/partial/no marks, totalling {part2_max_marks}.",
+  "duration_minutes": 120
+}}
+
+Return ONLY the JSON object. Do not include any other text before or after it.\
+"""
+
+# Variables: {part1_text}, {part1_rubric}, {part2_text}, {part2_rubric},
+#            {part1_max_marks}, {part2_max_marks}, {part1_submission_content},
+#            {part2_submission_content}, {resource_guidance}
+_MIDTERM_GRADING = """\
+You are an expert technical assessor for a software engineering learning \
+platform, grading a two-part Midterm exam.
+
+PART 1 — cumulative knowledge check ({part1_max_marks} marks)
+
+Exam:
+{part1_text}
+
+Rubric:
+{part1_rubric}
+
+Student's Part 1 answer:
+{part1_submission_content}
+
+PART 2 — project defense ({part2_max_marks} marks)
+
+Exam:
+{part2_text}
+
+Rubric:
+{part2_rubric}
+
+Student's Part 2 submission (their real project):
+{part2_submission_content}
+
+{resource_guidance}
+
+Grade Part 2 by checking the student's claims and explanations against the \
+actual project resources above — not only against the abstract rubric. A \
+defense that sounds plausible but misrepresents what the project actually \
+contains or does must NOT receive full credit for the claims that don't hold up.
+
+Evaluate both parts carefully and provide an objective grade for each.
+
+Respond with a single JSON object containing exactly these fields:
+{{
+  "part1_score": 27.0,
+  "part2_score": 63.0,
+  "weak_areas": ["specific concept 1", "specific concept 2"],
+  "overall_feedback": "Detailed, constructive feedback for the student covering both parts."
+}}
+
+Rules:
+- part1_score must be a number between 0.0 and {part1_max_marks}
+- part2_score must be a number between 0.0 and {part2_max_marks}
+- weak_areas lists 0–5 specific topics where the student showed gaps \
+(use an empty list [] if they demonstrated strong mastery throughout)
+- overall_feedback should be 2–4 sentences: acknowledge strengths, name \
+specific gaps, and give one actionable improvement suggestion
 Return ONLY the JSON object. Do not include any other text before or after it.\
 """
 
@@ -209,10 +368,13 @@ Return ONLY the JSON object. Do not include any other text before or after it.\
 # Maps slug → (version, body). Version is bumped when the prompt changes
 # in a way that meaningfully affects LLM behaviour.
 SEED_TEMPLATES: Final[dict[str, tuple[str, str]]] = {
-    "assessment_generation":     ("1.1", _ASSESSMENT_GENERATION),
+    "assessment_generation":     ("1.2", _ASSESSMENT_GENERATION),
     "curriculum_analysis":       ("1.0", _CURRICULUM_ANALYSIS),
-    "retest_generation":         ("1.1", _RETEST_GENERATION),
+    "retest_generation":         ("1.2", _RETEST_GENERATION),
+    "midterm_generation":        ("1.0", _MIDTERM_GENERATION),
+    "midterm_retest_generation": ("1.0", _MIDTERM_RETEST_GENERATION),
     "grading":                   ("1.0", _GRADING),
+    "midterm_grading":           ("1.0", _MIDTERM_GRADING),
     "reschedule_classification": ("1.0", _RESCHEDULE_CLASSIFICATION),
 }
 
