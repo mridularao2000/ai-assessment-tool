@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from app.dependencies import get_curriculum_upload_service
 from app.exceptions import CurriculumUploadValidationError, InvalidStateError, NotFoundError
+from app.models.curriculum import Curriculum
 from app.schemas.curriculum_upload import (
     AddEntryRequest,
     CloseUploadResponse,
@@ -14,6 +15,7 @@ from app.schemas.curriculum_upload import (
     CurriculumUploadDetailResponse,
     CurriculumUploadResponse,
     GPAResponse,
+    PendingCompletionSlot,
     PendingResourcesResponse,
     PendingResourcesUpdate,
     TranscriptChapterGroupResponse,
@@ -26,6 +28,18 @@ from app.services.gpa_service import compute_gpa
 from app.services.transcript_service import compute_transcript
 
 router = APIRouter()
+
+
+def _pending_completion_list(curriculum: Curriculum) -> list[PendingCompletionSlot] | None:
+    """None unless this is a midterm entry currently on hold — the "Submit
+    completed project" UI section only renders when this is non-None."""
+    if not curriculum.resources_hold or curriculum.midterm_detail is None:
+        return None
+    detail = curriculum.midterm_detail
+    return [
+        PendingCompletionSlot(slug=slug, label=label, value=detail.pending_completion_slots.get(slug))
+        for slug, label in detail.pending_completion_labels.items()
+    ]
 
 
 @router.post("/", response_model=CurriculumUploadResponse, status_code=201)
@@ -75,6 +89,7 @@ def get_curriculum_upload(
                 completion_date=e.target_completion_date,
                 max_marks=e.max_marks or 0.0,
                 resources_hold=e.resources_hold,
+                pending_completion=_pending_completion_list(e),
             )
             for e in upload.entries
         ],
@@ -160,6 +175,7 @@ def add_entry(
         completion_date=curriculum.target_completion_date,
         max_marks=curriculum.max_marks or 0.0,
         resources_hold=curriculum.resources_hold,
+        pending_completion=_pending_completion_list(curriculum),
     )
 
 
@@ -184,6 +200,7 @@ def update_entry(
         completion_date=curriculum.target_completion_date,
         max_marks=curriculum.max_marks or 0.0,
         resources_hold=curriculum.resources_hold,
+        pending_completion=_pending_completion_list(curriculum),
     )
 
 

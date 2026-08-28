@@ -176,9 +176,18 @@ class GradingService:
             raise NotFoundError("No active 'midterm_grading' prompt template found.")
 
         detail = curriculum.midterm_detail
-        resources = list(detail.known_now) + [
-            v for v in detail.pending_completion_slots.values() if v
-        ]
+        resources = list(detail.known_now)
+        readme_content = None
+        for slug, label in detail.pending_completion_labels.items():
+            value = detail.pending_completion_slots.get(slug)
+            if not value:
+                continue
+            if "readme" in label.lower():
+                # Prose to spot-check, not a fetchable label — see
+                # MidtermGradingRequest.readme_content's docstring.
+                readme_content = value
+            else:
+                resources.append(value)
 
         grading_result = self.llm.grade_midterm_submission(
             MidtermGradingRequest(
@@ -192,6 +201,7 @@ class GradingService:
                 part2_submission_content=part2_content,
                 prompt_template_body=prompt_template.body,
                 resources=resources,
+                readme_content=readme_content,
             )
         )
 

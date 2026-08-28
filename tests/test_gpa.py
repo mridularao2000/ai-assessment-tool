@@ -150,6 +150,34 @@ class TestFinalAttemptOnly:
         assert summary.total_max == pytest.approx(100.0)  # not double-counted
         assert summary.graded_count == 1
 
+    def test_unresolved_retake_excludes_stale_earlier_grade(self, db):
+        """Regression test: an entry whose retake exists but hasn't been
+        graded yet must not be counted at all — and specifically must not
+        silently fall back to attempt 1's stale failing grade. Before the
+        fix, compute_gpa() picked the latest attempt among GRADED ones only,
+        so a fresh, still-ungraded attempt 2 was invisible to it and it
+        counted attempt 1's grade instead — inconsistent with the
+        transcript, which correctly excludes this entry entirely via
+        _row_for()'s same "not yet resolved" rule."""
+        upload = _make_upload(db)
+        curriculum = make_curriculum(db, entry_type=CurriculumEntryType.assessment)
+        curriculum.upload_id, curriculum.max_marks = upload.id, 100.0
+        db.commit()
+
+        # Attempt 1: failed, 40/100 — graded.
+        a1, _ = make_assessment(db, curriculum, status=AssessmentStatus.completed, attempt_number=1)
+        s1 = make_submission(db, a1)
+        make_grade(db, s1, mastery_score=40.0, score_earned=40.0, max_marks=100.0)
+
+        # Attempt 2 (retake): generated, scheduled, NOT yet submitted/graded.
+        make_assessment(db, curriculum, status=AssessmentStatus.active, attempt_number=2)
+
+        summary = compute_gpa(db, upload.id)
+
+        assert summary.total_earned == 0.0
+        assert summary.total_max == 0.0  # NOT 100.0 — not counted yet, not attempt 1's stale grade
+        assert summary.graded_count == 0
+
 
 class TestMixedEntryTypes:
 

@@ -913,17 +913,7 @@ async function viewEntries() {
     return;
   }
 
-  const rows = data.entries.map(en => `
-    <tr>
-      <td class="font-monospace small">${escapeHtml(en.id)}</td>
-      <td>${escapeHtml(en.topic)}</td>
-      <td><span class="badge text-bg-secondary">${escapeHtml(en.entry_type)}</span></td>
-      <td>${escapeHtml(en.chapter_label)}</td>
-      <td>${escapeHtml(en.completion_date)}</td>
-      <td>${en.max_marks}</td>
-      <td>${en.resources_hold ? '<span class="badge text-bg-warning">held</span>' : ''}</td>
-      <td><button type="button" class="btn btn-sm btn-outline-primary" onclick="editEntry('${en.id}')">Edit →</button></td>
-    </tr>`).join('');
+  const rows = data.entries.map(en => renderEntryRow(en)).join('');
 
   box.innerHTML = `
     <div class="table-responsive">
@@ -934,6 +924,103 @@ async function viewEntries() {
         <tbody>${rows}</tbody>
       </table>
     </div>`;
+}
+
+function renderEntryRow(en) {
+  const held = en.resources_hold && en.pending_completion && en.pending_completion.length > 0;
+
+  const mainRow = `
+    <tr>
+      <td class="font-monospace small">${escapeHtml(en.id)}</td>
+      <td>${escapeHtml(en.topic)}</td>
+      <td><span class="badge text-bg-secondary">${escapeHtml(en.entry_type)}</span></td>
+      <td>${escapeHtml(en.chapter_label)}</td>
+      <td>${escapeHtml(en.completion_date)}</td>
+      <td>${en.max_marks}</td>
+      <td>${en.resources_hold ? '<span class="badge text-bg-warning">held</span>' : ''}</td>
+      <td class="text-nowrap">
+        <button type="button" class="btn btn-sm btn-outline-primary" onclick="editEntry('${en.id}')">Edit →</button>
+        ${held ? `<button type="button" class="btn btn-sm btn-outline-warning ms-1" onclick="toggleProjectSubmit('${en.id}')">Submit project ▾</button>` : ''}
+      </td>
+    </tr>`;
+
+  if (!held) return mainRow;
+
+  return mainRow + `
+    <tr id="project-submit-${en.id}" class="d-none">
+      <td colspan="8">
+        <div class="p-3 my-2 border border-warning-subtle rounded bg-warning-subtle bg-opacity-25">
+          <h6 class="mb-1">Submit completed project</h6>
+          <p class="text-muted small mb-3">
+            This midterm's exam window stays held until every field below is filled in —
+            filling them all opens it.
+          </p>
+          ${en.pending_completion.map(slot => renderPendingField(en.id, slot)).join('')}
+          <button type="button" class="btn btn-primary btn-sm" onclick="submitProjectResources('${en.id}')"
+                  id="project-submit-btn-${en.id}" data-label="Submit">
+            Submit
+          </button>
+          <div id="project-submit-result-${en.id}" class="response-box"></div>
+        </div>
+      </td>
+    </tr>`;
+}
+
+function renderPendingField(entryId, slot) {
+  const fieldId = `pc_${entryId}_${slot.slug}`;
+  const isReadme = slot.label.toLowerCase().includes('readme');
+  const value = slot.value || '';
+
+  if (isReadme) {
+    return `
+      <div class="mb-3">
+        <label class="form-label" for="${fieldId}">${escapeHtml(slot.label)}</label>
+        <textarea class="form-control" id="${fieldId}" rows="6"
+          placeholder="Describe your design decisions. For EACH claim, point to the specific file path and function that backs it up — e.g. &quot;see src/auth/token.py, function verify_token() — this is where token expiry is checked.&quot; Claims with no file/function reference can't be verified.">${escapeHtml(value)}</textarea>
+      </div>`;
+  }
+  return `
+    <div class="mb-3">
+      <label class="form-label" for="${fieldId}">${escapeHtml(slot.label)}</label>
+      <input type="text" class="form-control font-monospace" id="${fieldId}" value="${escapeHtml(value)}">
+    </div>`;
+}
+
+function toggleProjectSubmit(entryId) {
+  document.getElementById(`project-submit-${entryId}`).classList.toggle('d-none');
+}
+
+async function submitProjectResources(entryId) {
+  const btn = document.getElementById(`project-submit-btn-${entryId}`);
+  const resultBox = document.getElementById(`project-submit-result-${entryId}`);
+  resultBox.style.display = 'none';
+
+  const prefix = `pc_${entryId}_`;
+  const values = {};
+  document.querySelectorAll(`[id^="${prefix}"]`).forEach(el => {
+    values[el.id.slice(prefix.length)] = el.value.trim();
+  });
+
+  setLoading(btn, true);
+  const { ok, data } = await api(
+    `/api/v1/curriculum-uploads/entries/${encodeURIComponent(entryId)}/pending-resources`,
+    {
+      method:  'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ values }),
+    }
+  );
+  setLoading(btn, false);
+
+  resultBox.textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+  resultBox.className = 'response-box ' + (ok ? 'response-ok' : 'response-err');
+  resultBox.style.display = 'block';
+
+  if (ok && !data.resources_hold) {
+    // Every field is now filled — the hold cleared. Refresh the table so
+    // this entry drops its "held" badge and the submit section.
+    viewEntries();
+  }
 }
 
 function editEntry(id) {

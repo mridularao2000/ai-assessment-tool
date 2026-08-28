@@ -275,6 +275,22 @@ Student's Part 2 submission (their real project):
 
 {resource_guidance}
 
+Project README / design writeup on record for this project (submitted when \
+this midterm's pending resources were filled in):
+{readme_content}
+
+SPOT-CHECK — light, not a full code review: the README above may reference \
+specific file paths and/or function names to support its design decisions. \
+For each such reference, use the fetchable resources above (web_search/ \
+web_fetch) to confirm whether that file/function actually exists and \
+roughly matches what's claimed. You are not expected to read the whole \
+codebase — only check the specific claims made. If a referenced path does \
+not exist, or exists but clearly contradicts the claim, that is a real \
+misrepresentation and must meaningfully lower part2_score, not just be \
+noted as a footnote. If the references check out, that confirms the \
+defense is grounded in the real project — it does not by itself earn \
+extra credit beyond what the defense's actual content deserves.
+
 Grade Part 2 by checking the student's claims and explanations against the \
 actual project resources above — not only against the abstract rubric. A \
 defense that sounds plausible but misrepresents what the project actually \
@@ -374,7 +390,7 @@ SEED_TEMPLATES: Final[dict[str, tuple[str, str]]] = {
     "midterm_generation":        ("1.0", _MIDTERM_GENERATION),
     "midterm_retest_generation": ("1.0", _MIDTERM_RETEST_GENERATION),
     "grading":                   ("1.0", _GRADING),
-    "midterm_grading":           ("1.0", _MIDTERM_GRADING),
+    "midterm_grading":           ("1.1", _MIDTERM_GRADING),
     "reschedule_classification": ("1.0", _RESCHEDULE_CLASSIFICATION),
 }
 

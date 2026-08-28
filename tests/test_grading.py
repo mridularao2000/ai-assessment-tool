@@ -563,3 +563,73 @@ class TestRetakeCap:
         db.expire_all()
         assessments = db.query(Assessment).filter_by(curriculum_id=curriculum.id).all()
         assert len(assessments) == 1  # still capped at 2 total, no attempt 3
+
+
+class _CapturingMidtermLLM(FakeLLM):
+    """Records the MidtermGradingRequest it received, so a test can assert
+    on exactly what grading_service._grade_midterm() built and sent —
+    still returns a valid canned result via FakeLLM, no real API call."""
+
+    def __init__(self):
+        self.last_request = None
+
+    def grade_midterm_submission(self, req):
+        self.last_request = req
+        return super().grade_midterm_submission(req)
+
+
+class TestMidtermGradingReadmeSeparation:
+    """Regression test for the README/file-path spot-check wiring
+    (grading_service.py::_grade_midterm): a pending_completion slot whose
+    LABEL contains "readme" must be routed to
+    MidtermGradingRequest.readme_content, not into `resources` — that list
+    is treated as fetchable URLs/labels via build_resource_guidance
+    (web_search + web_fetch instructions per entry), which is wrong for
+    free-text prose like a submitted design writeup.
+
+    This only proves the WIRING is correct — it can't prove (and doesn't
+    try to prove) that the spot-check actually changes a real grade; that
+    requires a real LLM call and was verified separately, once, outside
+    the test suite (see the session notes / PR description).
+    """
+
+    def test_readme_labeled_slot_goes_to_readme_content_not_resources(self, db):
+        from app.models.midterm_detail import MidtermDetail
+
+        curriculum = make_curriculum(db, entry_type=CurriculumEntryType.midterm)
+        curriculum.max_marks = 100.0
+        db.add(MidtermDetail(
+            curriculum_id=curriculum.id,
+            known_now=["general OOP principles"],
+            pending_completion_labels={
+                "repo_url": "Repo URL",
+                "readme_with_design_decisions": "README with design decisions",
+            },
+            pending_completion_slots={
+                "repo_url": "https://github.com/octocat/Hello-World",
+                "readme_with_design_decisions": "See src/auth/token.py, function verify_token().",
+            },
+            probe_focus="defend the design",
+            part1_max_marks=30.0,
+            part2_max_marks=70.0,
+        ))
+        db.commit()
+        db.refresh(curriculum)
+
+        assessment, _ = make_assessment(
+            db, curriculum, status=AssessmentStatus.active,
+            part1_text="Part 1 exam", part1_rubric="Part 1 rubric",
+            part2_text="Part 2 exam", part2_rubric="Part 2 rubric",
+        )
+        submission = make_submission(db, assessment, part1_text_content="Part 1 answer")
+        seed_prompt_templates(db)
+
+        capturing_llm = _CapturingMidtermLLM()
+        GradingService(db, capturing_llm).grade(submission.id)
+
+        req = capturing_llm.last_request
+        assert req is not None
+        assert req.readme_content == "See src/auth/token.py, function verify_token()."
+        assert req.resources == ["general OOP principles", "https://github.com/octocat/Hello-World"]
+        # The README's content must never leak into `resources`.
+        assert not any("verify_token" in r for r in req.resources)

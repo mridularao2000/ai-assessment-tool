@@ -10,6 +10,12 @@ class CurriculumUploadResponse(BaseModel):
     syllabus_email_sent: bool
 
 
+class PendingCompletionSlot(BaseModel):
+    slug: str
+    label: str
+    value: Optional[str] = None
+
+
 class CurriculumEntrySummary(BaseModel):
     id: str
     topic: str
@@ -18,6 +24,12 @@ class CurriculumEntrySummary(BaseModel):
     completion_date: date
     max_marks: float
     resources_hold: bool
+    # Populated only for a midterm-type entry currently on hold — the
+    # pending_completion slots the "Submit completed project" UI section
+    # needs to render. None for every other entry (not just False/empty),
+    # so the frontend can distinguish "nothing to show" from "not a held
+    # midterm at all".
+    pending_completion: Optional[list[PendingCompletionSlot]] = None
 
 
 class CurriculumUploadDetailResponse(BaseModel):

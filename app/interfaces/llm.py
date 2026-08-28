@@ -132,13 +132,20 @@ class MidtermGradingRequest:
     Part 1 and Part 2 are graded together (they share one overall_feedback)
     but scored independently against their own rubric and max_marks.
 
-    resources mirrors the grounding used at generation time (own_resources
-    from generate_midterm/generate_midterm_retest) — Part 2 asks the
-    student to defend real decisions made in their project, so grading it
-    accurately requires checking those claims against the project's actual
-    resources (repo, README, design docs), not just a static rubric.
-    Without this, a defense that sounds plausible but misrepresents the
-    real project could be scored as correct with no way to catch it.
+    resources are the FETCHABLE grounding artifacts (repo URL, known_now
+    labels) — these get web_search/web_fetch tool access so their real,
+    current content can be checked against the student's claims.
+
+    readme_content is different in kind, not just another resource: it's
+    the free-text project README/design writeup the student supplied when
+    filling this midterm's pending resources (see
+    CurriculumUploadService.fill_pending_resources), specifically prompted
+    to reference exact file paths/functions for each design decision it
+    describes. It must NOT be run through the same "treat every string as
+    a URL to search for" resource_guidance path resources uses — it's
+    prose to be spot-checked (its specific file/function claims verified
+    against the fetched resources above), not a label to fetch. None when
+    no pending-resource slot on this midterm was identified as the README.
     """
 
     part1_text: str
@@ -151,6 +158,7 @@ class MidtermGradingRequest:
     part2_submission_content: str
     prompt_template_body: str
     resources: Optional[list[str]] = None
+    readme_content: Optional[str] = None
 
 
 @dataclass

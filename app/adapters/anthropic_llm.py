@@ -323,6 +323,8 @@ class AnthropicLLMAdapter:
                 part1_submission_content=req.part1_submission_content,
                 part2_submission_content=req.part2_submission_content,
                 resource_guidance=build_resource_guidance(req.resources or []),
+                readme_content=req.readme_content
+                or "(No project README/design writeup was submitted for this midterm.)",
             )
             if attempt > 0:
                 prompt += "\n\nReturn ONLY valid JSON with no extra text."

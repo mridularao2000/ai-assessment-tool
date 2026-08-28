@@ -31,8 +31,12 @@ def compute_gpa(db: Session, upload_id: str) -> GPASummary:
 
     Only the FINAL attempt counts for an entry that was retaken (its Grade
     already reflects that attempt only — retakes overwrite nothing, each
-    attempt is its own Assessment/Grade row, so "final attempt" just means
-    the highest attempt_number that reached completed).
+    attempt is its own Assessment/Grade row, so "final attempt" means the
+    highest attempt_number that EXISTS, not the highest one that happens
+    to be graded — an entry with a fresh, not-yet-resolved retake must not
+    silently fall back to its earlier failing grade; it isn't counted at
+    all until that retake resolves, mirroring transcript_service._row_for's
+    same "not yet resolved -> excluded" rule).
 
     "Missed — No Score" entries (due date passed, later calendar month, no
     late-eligible window left) count as 0 earned / max_marks in the
@@ -51,20 +55,29 @@ def compute_gpa(db: Session, upload_id: str) -> GPASummary:
     missed_count = 0
 
     for curriculum in entries:
-        graded_attempts = [
-            a for a in curriculum.assessments
-            if a.status == AssessmentStatus.completed
-            and a.submission is not None
-            and a.submission.grade is not None
-        ]
-        if graded_attempts:
-            final = max(graded_attempts, key=lambda a: a.attempt_number)
-            grade = final.submission.grade
-            if grade.score_earned is not None and grade.max_marks:
-                total_earned += grade.score_earned
-                total_max += grade.max_marks
-                graded_count += 1
-            continue
+        if curriculum.assessments:
+            final = max(curriculum.assessments, key=lambda a: a.attempt_number)
+            if (
+                final.status == AssessmentStatus.completed
+                and final.submission is not None
+                and final.submission.grade is not None
+            ):
+                grade = final.submission.grade
+                if grade.score_earned is not None and grade.max_marks:
+                    total_earned += grade.score_earned
+                    total_max += grade.max_marks
+                    graded_count += 1
+                continue
+            if final.status != AssessmentStatus.expired:
+                # The latest attempt exists but isn't resolved yet (e.g. a
+                # retake was just generated and hasn't been graded, or the
+                # first attempt is still scheduled/active/submitted) — not
+                # counted yet, and NOT a fallback to an earlier attempt's
+                # stale grade.
+                continue
+            # else: latest attempt is `expired` — due_date passed with
+            # nothing ever submitted for it — fall through to the
+            # missed-check below exactly as if there were no assessments.
 
         if display_status(db, curriculum) == MISSED_NO_SCORE:
             total_max += curriculum.max_marks or 0.0
