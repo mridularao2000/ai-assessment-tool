@@ -1,5 +1,5 @@
 from datetime import date, datetime
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel
 
@@ -54,6 +54,7 @@ class TranscriptRowResponse(BaseModel):
     status_label: str
     points: Optional[float]
     retake_note: Optional[str]
+    was_late: bool
 
 
 class TranscriptChapterGroupResponse(BaseModel):
@@ -72,3 +73,21 @@ class TranscriptResponse(BaseModel):
     total_points: float
     gpa: float
     course_material_captured_at: Optional[datetime]
+
+
+class AddEntryRequest(BaseModel):
+    """Same shape as one item in the upload file's `topics` list."""
+    entry: dict[str, Any]
+
+
+class UpdateEntryRequest(BaseModel):
+    """Field -> new value. Allowed: topic, chapter_label,
+    target_completion_date, max_marks, resources (assessment-type),
+    known_now/probe_focus (midterm-type). Refused entirely if the entry
+    already has an attempt or grade on record."""
+    updates: dict[str, Any]
+
+
+class CloseUploadResponse(BaseModel):
+    upload_id: str
+    closed_at: datetime

@@ -10,6 +10,7 @@ from app.models.assessment import AssessmentStatus
 from app.models.curriculum import Curriculum, CurriculumEntryType
 from app.exceptions import NotFoundError
 from app.models.curriculum_upload import CurriculumUpload
+from app.models.late_submission_token import LateSubmissionToken
 from app.services.late_token_service import LateTokenService
 from app.services.syllabus_builder import _chapter_number
 
@@ -49,7 +50,7 @@ def display_status(db: Session, curriculum: Curriculum) -> str:
         now = datetime.utcnow()
         due = latest.due_date
         if (due.year, due.month) == (now.year, now.month):
-            balance = LateTokenService(db).get_balance()
+            balance = LateTokenService(db).get_balance(curriculum.upload_id)
             return f"Missed — Late-Eligible ({balance} left)"
         return MISSED_NO_SCORE
 
@@ -91,9 +92,16 @@ class TranscriptEntryRow:
     topic: str
     chapter_number: Optional[int]
     max_marks: float
-    status_label: str      # compact form, e.g. "GRADED", "MISSED–LATE (2)"
+    status_label: str      # compact form, e.g. "GRADED", "GRADED (LATE)", "MISSED–LATE (2)"
     points: Optional[float]  # None -> rendered as "—"
     retake_note: Optional[str] = None  # e.g. "retake, was 38.00"
+    was_late: bool = False  # graded from a late-token-covered submission —
+    # the transcript must show this distinctly, not render identically to
+    # an on-time grade (a missed-then-late-graded entry is real history,
+    # not something the final "completed" status alone can show — see
+    # AssessmentStatus.late_submitted getting overwritten to `completed`
+    # by GradingService.grade(), which loses the distinction unless it's
+    # re-derived here from LateSubmissionToken.used_by_assessment_id).
 
 
 @dataclass
@@ -127,8 +135,22 @@ def _row_for(db: Session, curriculum: Curriculum) -> Optional[TranscriptEntryRow
 
     points: Optional[float] = None
     retake_note: Optional[str] = None
+    was_late = False
     if status == GRADED and final.submission is not None and final.submission.grade is not None:
         points = final.submission.grade.score_earned
+        # A token is spent to get access past a closed window, not for a
+        # normal fail-then-retry — so it may be recorded against an
+        # EARLIER attempt than the one that produced the final grade (a
+        # token-covered attempt that failed, followed by a free retake
+        # that passed). Checking only `final.id` misses that case; the
+        # entry is late if a token was used at ANY point in its history.
+        attempt_ids = [a.id for a in attempts]
+        was_late = (
+            db.query(LateSubmissionToken)
+            .filter(LateSubmissionToken.used_by_assessment_id.in_(attempt_ids))
+            .first()
+            is not None
+        )
 
     if final.attempt_number > 1:
         first = attempts[0]
@@ -137,14 +159,19 @@ def _row_for(db: Session, curriculum: Curriculum) -> Optional[TranscriptEntryRow
             if prior_points is not None:
                 retake_note = f"retake, was {prior_points:.2f}"
 
+    status_label = _compact_status_label(status)
+    if was_late:
+        status_label += " (LATE)"
+
     return TranscriptEntryRow(
         row_id="",  # assigned by compute_transcript once chapter grouping/order is known
         topic=curriculum.topic,
         chapter_number=_chapter_number(curriculum.chapter_label or ""),
         max_marks=curriculum.max_marks or 0.0,
-        status_label=_compact_status_label(status),
+        status_label=status_label,
         points=points,
         retake_note=retake_note,
+        was_late=was_late,
     )
 
 

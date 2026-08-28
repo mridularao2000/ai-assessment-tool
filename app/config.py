@@ -14,6 +14,18 @@ class Settings(BaseSettings):
 
     # ── Database ──────────────────────────────────────────────────────────────
     database_url: str = "sqlite:///./assessment.db"
+    # Gates the startup schema-bootstrap step (create_all + prompt-template
+    # seed) in app.main.lifespan — this app has no separate migration tool,
+    # so that step IS the real, intended way its schema/seed data gets
+    # created. It must stay explicit rather than implicit: FastAPI's
+    # TestClient triggers lifespan on the first request even without a
+    # `with` block, and app.database.engine is a process-global singleton
+    # bound to database_url at import time — with no guard, ANY test that
+    # exercises a route silently ran create_all()/seed against the real
+    # tracked assessment.db, not the test session's isolated engine. Tests
+    # force this to False (see tests/conftest.py) before app.database is
+    # ever imported; real app startup leaves it True.
+    run_schema_bootstrap: bool = True
 
     # ── User ──────────────────────────────────────────────────────────────────
     user_email: str = ""
@@ -57,6 +69,12 @@ class Settings(BaseSettings):
     # AssessmentService.build_assessment_dates vs.
     # CurriculumUploadService's entry-specific date math.
     entry_reminder_hours_before_deadline: int = Field(default=24, ge=1)
+    # Flow (e) transcript, secondary copy: removed from the per-event
+    # trigger entirely (that now sends only to user_email, the primary) and
+    # sent instead by a standalone biweekly job. Empty = the biweekly job
+    # sends nothing — set once a real secondary address is confirmed.
+    transcript_secondary_recipient_email: str = ""
+    transcript_secondary_interval_days: int = Field(default=14, ge=1)
 
     @property
     def results_recipient_emails(self) -> list[str]:
@@ -67,6 +85,22 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     llm_model: str = "claude-sonnet-4-6"
     llm_max_retries: int = 3
+    # ── Test / isolated mode ─────────────────────────────────────────────────────
+    # Single flag for standing up a fully isolated server (e.g. to verify a
+    # UI/API change) with ZERO real outbound side effects — neither a real
+    # LLM call nor a real email send, regardless of whether ANTHROPIC_API_KEY
+    # / RESEND_API_KEY happen to be present in the environment (both are
+    # normally read straight from .env, so an "isolated" server pointed at a
+    # throwaway DB would otherwise still fire real API calls using whatever
+    # keys .env happens to have — this is what actually neuters them).
+    # app.dependencies._build_llm()/_build_email() check this FIRST, before
+    # their key-presence checks: true -> FakeLLMAdapter / FakeEmailAdapter
+    # (canned/no-op, no network call). Must stay unset in production; real
+    # app deployments never set this env var. This is distinct from a
+    # deliberate dry-run against real integrations (isolated DB, real LLM
+    # and email, to prove real-world behavior) — that kind of run leaves
+    # this flag OFF on purpose.
+    test_mode: bool = False
 
 
 @lru_cache

@@ -14,10 +14,8 @@
       width: 26px; height: 26px; border-radius: 50%;
       background: #0d6efd; color: #fff;
       font-size: 0.75rem; font-weight: 700;
-      flex-shrink: 0; margin-right: 8px;
+      flex-shrink: 0; margin-right: 10px;
     }
-
-    .card-title { display: flex; align-items: center; }
 
     .response-box {
       display: none;
@@ -41,10 +39,19 @@
     /* Submission type toggle animation */
     .sub-section { transition: opacity 0.15s; }
     .sub-section.d-none { opacity: 0; }
+
+    /* Accordion: badge stays visible whether open or collapsed */
+    .accordion-button:not(.collapsed) { background: #e7f1ff; color: #084298; box-shadow: none; }
+    .accordion-button:focus { box-shadow: none; border-color: rgba(0,0,0,.125); }
+    .accordion-item { border-color: rgba(0,0,0,.08); }
+    .accordion-body { padding: 1.25rem 1.5rem 1.5rem; }
+
+    .nav-pills .nav-link { font-weight: 600; }
+    .nav-pills .nav-link.active { background-color: #0d6efd; }
   </style>
 </head>
 <body>
-<div class="container py-4 py-md-5" style="max-width: 700px">
+<div class="container py-4 py-md-5" style="max-width: 760px">
 
   <!-- Header -->
   <div class="mb-4">
@@ -52,210 +59,527 @@
       <img src="/logo.svg" alt="Logo" width="36" height="36">
       <h3 class="fw-bold mb-0">AI Assessment System</h3>
     </div>
-    <p class="text-muted mb-2">Developer control panel</p>
-    <div class="alert alert-info alert-sm py-2 small mb-0">
-      <strong>Workflow:</strong>
-      Create Curriculum → assessment is auto-generated &amp; emailed on the scheduled date →
-      open the email link to pre-fill your ID &amp; token → Submit Answer → Get Results.
-      Use Reschedule if you need to delay the assessment date.
-    </div>
+    <p class="text-muted mb-0">Developer control panel</p>
   </div>
 
-  <!-- ── 1. Create Curriculum ─────────────────────────────────────────────── -->
-  <div class="card mb-4 shadow-sm border-0">
-    <div class="card-body p-4">
-      <h5 class="card-title mb-3"><span class="section-badge">1</span>Create Curriculum</h5>
-      <form id="curriculumForm" novalidate>
-
-        <div class="mb-3">
-          <label class="form-label" for="c_topic">Topic <span class="text-danger">*</span></label>
-          <input type="text" class="form-control" id="c_topic"
-                 placeholder="e.g. Python async programming" required>
-        </div>
-
-        <div class="mb-3">
-          <label class="form-label" for="c_date">Target Completion Date <span class="text-danger">*</span></label>
-          <input type="date" class="form-control" id="c_date" required>
-        </div>
-
-        <div class="mb-3">
-          <label class="form-label" for="c_notes">Notes
-            <span class="text-muted fw-normal">(optional)</span>
-          </label>
-          <textarea class="form-control" id="c_notes" rows="3"
-                    placeholder="Free-form study notes, key concepts, anything relevant…"></textarea>
-        </div>
-
-        <div class="mb-3">
-          <label class="form-label" for="c_links">Links
-            <span class="text-muted fw-normal">(one URL per line, optional)</span>
-          </label>
-          <textarea class="form-control font-monospace" id="c_links" rows="2"
-                    placeholder="https://docs.python.org/3/library/asyncio.html&#10;https://realpython.com/async-io-python/"></textarea>
-        </div>
-
-        <div class="mb-3">
-          <label class="form-label" for="c_repos">GitHub Repos
-            <span class="text-muted fw-normal">(one URL per line, optional)</span>
-          </label>
-          <textarea class="form-control font-monospace" id="c_repos" rows="2"
-                    placeholder="https://github.com/user/repo"></textarea>
-        </div>
-
-        <div class="mb-3">
-          <label class="form-label" for="c_files">Upload Files
-            <span class="text-muted fw-normal">(optional, multiple allowed)</span>
-          </label>
-          <input type="file" class="form-control" id="c_files" multiple>
-        </div>
-
-        <p class="text-muted small mb-3">
-          At least one of notes, links, GitHub repos, or a file is required.
-        </p>
-
-        <button type="submit" class="btn btn-primary"
-                id="curriculumBtn" data-label="Create Curriculum">
-          Create Curriculum
-        </button>
-      </form>
-      <div id="curriculumResult" class="response-box"></div>
-    </div>
-  </div>
-
-  <!-- ── 2. Submit Answer ─────────────────────────────────────────────────── -->
-  <div class="card mb-4 shadow-sm border-0">
-    <div class="card-body p-4">
-      <h5 class="card-title mb-3"><span class="section-badge">2</span>Submit Answer</h5>
-      <p class="text-muted small mb-2">
-        On assessment day you'll receive an email with your questions and a link.
-        Opening that link pre-fills the Assessment ID and Token below automatically.
-      </p>
-      <p class="text-muted small mb-3">
-        Late submissions remaining this month: <span id="lateTokenCount" class="fw-semibold">—</span>
-      </p>
-
-      <form id="submissionForm" novalidate>
-
-        <div class="row g-3 mb-3">
-          <div class="col-sm-7">
-            <label class="form-label" for="s_id">Assessment ID</label>
-            <input type="text" class="form-control font-monospace" id="s_id" placeholder="UUID — pre-filled from email link">
-          </div>
-          <div class="col-sm-5">
-            <label class="form-label" for="s_token">Token</label>
-            <input type="text" class="form-control font-monospace" id="s_token" placeholder="Pre-filled from email link">
-          </div>
-        </div>
-
-        <div id="s_part1_section" class="sub-section mb-3 d-none">
-          <label class="form-label" for="s_part1_text">
-            Part 1 — Assignment Answer
-            <span class="text-muted fw-normal">(cumulative questions from the exam email)</span>
-          </label>
-          <textarea class="form-control" id="s_part1_text" rows="5"
-                    placeholder="Answer Part 1's assignment questions here…"></textarea>
-        </div>
-
-        <div class="mb-3">
-          <label class="form-label" for="s_type" id="s_type_label">Submission Type</label>
-          <select class="form-select" id="s_type" onchange="toggleSubmissionType()">
-            <option value="text">Text answer</option>
-            <option value="github_url">GitHub URL</option>
-            <option value="file">File upload</option>
-          </select>
-        </div>
-
-        <div id="s_text_section" class="sub-section mb-3">
-          <label class="form-label" for="s_text">Your Answer</label>
-          <textarea class="form-control" id="s_text" rows="7"
-                    placeholder="Write your answer here…"></textarea>
-        </div>
-
-        <div id="s_github_section" class="sub-section mb-3 d-none">
-          <label class="form-label" for="s_github">GitHub Repository URL</label>
-          <input type="url" class="form-control" id="s_github"
-                 placeholder="https://github.com/user/repo">
-        </div>
-
-        <div id="s_file_section" class="sub-section mb-3 d-none">
-          <label class="form-label" for="s_file">File</label>
-          <input type="file" class="form-control" id="s_file">
-        </div>
-
-        <button type="submit" class="btn btn-primary"
-                id="submissionBtn" data-label="Submit Answer">
-          Submit Answer
-        </button>
-      </form>
-      <div id="submissionResult" class="response-box"></div>
-    </div>
-  </div>
-
-  <!-- ── 3. Get Results ──────────────────────────────────────────────────── -->
-  <div class="card mb-4 shadow-sm border-0">
-    <div class="card-body p-4">
-      <h5 class="card-title mb-1"><span class="section-badge">3</span>Get Results</h5>
-      <p class="text-muted small mb-3">
-        Grading runs in the background after submission — you'll also receive a results email.
-        The Submission ID is auto-filled after a successful submission above.
-      </p>
-
-      <div class="mb-3">
-        <label class="form-label" for="r_id">Submission ID</label>
-        <input type="text" class="form-control font-monospace" id="r_id"
-               placeholder="UUID — auto-filled after submission">
-      </div>
-
-      <button class="btn btn-primary"
-              id="resultsBtn" data-label="Get Results"
-              onclick="getResults()">
-        Get Results
+  <!-- Tabs -->
+  <ul class="nav nav-pills mb-3 gap-2" id="mainTabs" role="tablist">
+    <li class="nav-item" role="presentation">
+      <button class="nav-link active" id="tab-standalone-btn" data-bs-toggle="pill"
+              data-bs-target="#pane-standalone" type="button" role="tab"
+              aria-controls="pane-standalone" aria-selected="true">
+        Standalone Assessment
       </button>
-      <div id="resultsResult" class="response-box"></div>
-    </div>
-  </div>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="tab-curriculum-btn" data-bs-toggle="pill"
+              data-bs-target="#pane-curriculum" type="button" role="tab"
+              aria-controls="pane-curriculum" aria-selected="false">
+        Curriculum Upload
+      </button>
+    </li>
+  </ul>
 
-  <!-- ── 4. Reschedule ───────────────────────────────────────────────────── -->
-  <div class="card mb-4 shadow-sm border-0">
-    <div class="card-body p-4">
-      <h5 class="card-title mb-1"><span class="section-badge">4</span>Reschedule Assessment</h5>
-      <p class="text-muted small mb-3">
-        Only scheduled or active assessments can be rescheduled.
-        The reason is classified by AI — medical, interview, and emergency requests
-        are approved; procrastination and lack-of-preparation are denied.
-        Assessment ID and Token are pre-filled from the email link.
-      </p>
+  <div class="tab-content">
 
-      <div class="row g-3 mb-3">
-        <div class="col-sm-7">
-          <label class="form-label" for="re_id">Assessment ID</label>
-          <input type="text" class="form-control font-monospace" id="re_id" placeholder="UUID — pre-filled from email link">
-        </div>
-        <div class="col-sm-5">
-          <label class="form-label" for="re_token">Token</label>
-          <input type="text" class="form-control font-monospace" id="re_token" placeholder="Pre-filled from email link">
-        </div>
+    <!-- ══════════════════════ STANDALONE ASSESSMENT ══════════════════════ -->
+    <div class="tab-pane fade show active" id="pane-standalone" role="tabpanel">
+
+      <div class="alert alert-info alert-sm py-2 small mb-3">
+        <strong>Workflow:</strong>
+        Create Curriculum → assessment is auto-generated &amp; emailed on the scheduled date →
+        open the email link to pre-fill your ID &amp; token → Submit Answer → Get Results.
+        Use Reschedule if you need to delay the assessment date.
       </div>
 
-      <form id="rescheduleForm" novalidate>
-        <div class="mb-3">
-          <label class="form-label" for="re_reason">
-            Reason
-            <span class="text-muted fw-normal">(minimum 20 characters)</span>
-          </label>
-          <textarea class="form-control" id="re_reason" rows="3"
-                    placeholder="e.g. I have a confirmed medical appointment on the assessment date and cannot attend."
-                    oninput="updateCharCount()"></textarea>
-          <div class="form-text" id="reCharCount">0 / 20 minimum</div>
+      <div class="accordion" id="accordionStandalone">
+
+        <!-- ── 1. Create Curriculum ─────────────────────────────────────── -->
+        <div class="accordion-item">
+          <h2 class="accordion-header">
+            <button class="accordion-button" type="button" data-bs-toggle="collapse"
+                    data-bs-target="#collapseCreate" aria-expanded="true" aria-controls="collapseCreate">
+              <span class="section-badge">1</span>Create Curriculum
+            </button>
+          </h2>
+          <div id="collapseCreate" class="accordion-collapse collapse show" data-bs-parent="#accordionStandalone">
+            <div class="accordion-body">
+              <form id="curriculumForm" novalidate>
+
+                <div class="mb-3">
+                  <label class="form-label" for="c_topic">Topic <span class="text-danger">*</span></label>
+                  <input type="text" class="form-control" id="c_topic"
+                         placeholder="e.g. Python async programming" required>
+                </div>
+
+                <div class="mb-3">
+                  <label class="form-label" for="c_date">Target Completion Date <span class="text-danger">*</span></label>
+                  <input type="date" class="form-control" id="c_date" required>
+                </div>
+
+                <div class="mb-3">
+                  <label class="form-label" for="c_notes">Notes
+                    <span class="text-muted fw-normal">(optional)</span>
+                  </label>
+                  <textarea class="form-control" id="c_notes" rows="3"
+                            placeholder="Free-form study notes, key concepts, anything relevant…"></textarea>
+                </div>
+
+                <div class="mb-3">
+                  <label class="form-label" for="c_links">Links
+                    <span class="text-muted fw-normal">(one URL per line, optional)</span>
+                  </label>
+                  <textarea class="form-control font-monospace" id="c_links" rows="2"
+                            placeholder="https://docs.python.org/3/library/asyncio.html&#10;https://realpython.com/async-io-python/"></textarea>
+                </div>
+
+                <div class="mb-3">
+                  <label class="form-label" for="c_repos">GitHub Repos
+                    <span class="text-muted fw-normal">(one URL per line, optional)</span>
+                  </label>
+                  <textarea class="form-control font-monospace" id="c_repos" rows="2"
+                            placeholder="https://github.com/user/repo"></textarea>
+                </div>
+
+                <div class="mb-3">
+                  <label class="form-label" for="c_files">Upload Files
+                    <span class="text-muted fw-normal">(optional, multiple allowed)</span>
+                  </label>
+                  <input type="file" class="form-control" id="c_files" multiple>
+                </div>
+
+                <p class="text-muted small mb-3">
+                  At least one of notes, links, GitHub repos, or a file is required.
+                </p>
+
+                <button type="submit" class="btn btn-primary"
+                        id="curriculumBtn" data-label="Create Curriculum">
+                  Create Curriculum
+                </button>
+              </form>
+              <div id="curriculumResult" class="response-box"></div>
+            </div>
+          </div>
         </div>
-        <button type="submit" class="btn btn-primary"
-                id="rescheduleBtn" data-label="Request Reschedule">
-          Request Reschedule
-        </button>
-      </form>
-      <div id="rescheduleResult" class="response-box"></div>
-    </div>
-  </div>
+
+        <!-- ── 2. Submit Answer ─────────────────────────────────────────── -->
+        <div class="accordion-item">
+          <h2 class="accordion-header">
+            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
+                    data-bs-target="#collapseSubmit" aria-expanded="false" aria-controls="collapseSubmit">
+              <span class="section-badge">2</span>Submit Answer
+            </button>
+          </h2>
+          <div id="collapseSubmit" class="accordion-collapse collapse" data-bs-parent="#accordionStandalone">
+            <div class="accordion-body">
+              <p class="text-muted small mb-2">
+                On assessment day you'll receive an email with your questions and a link.
+                Opening that link pre-fills the Assessment ID and Token below automatically.
+              </p>
+              <p class="text-muted small mb-3">
+                Late submissions remaining this month: <span id="lateTokenCount" class="fw-semibold">—</span>
+              </p>
+
+              <form id="submissionForm" novalidate>
+
+                <div class="row g-3 mb-3">
+                  <div class="col-sm-7">
+                    <label class="form-label" for="s_id">Assessment ID</label>
+                    <input type="text" class="form-control font-monospace" id="s_id" placeholder="UUID — pre-filled from email link">
+                  </div>
+                  <div class="col-sm-5">
+                    <label class="form-label" for="s_token">Token</label>
+                    <input type="text" class="form-control font-monospace" id="s_token" placeholder="Pre-filled from email link">
+                  </div>
+                </div>
+
+                <div id="s_part1_section" class="sub-section mb-3 d-none">
+                  <label class="form-label" for="s_part1_text">
+                    Part 1 — Assignment Answer
+                    <span class="text-muted fw-normal">(cumulative questions from the exam email)</span>
+                  </label>
+                  <textarea class="form-control" id="s_part1_text" rows="5"
+                            placeholder="Answer Part 1's assignment questions here…"></textarea>
+                </div>
+
+                <div class="mb-3">
+                  <label class="form-label" for="s_type" id="s_type_label">Submission Type</label>
+                  <select class="form-select" id="s_type" onchange="toggleSubmissionType()">
+                    <option value="text">Text answer</option>
+                    <option value="github_url">GitHub URL</option>
+                    <option value="file">File upload</option>
+                  </select>
+                </div>
+
+                <div id="s_text_section" class="sub-section mb-3">
+                  <label class="form-label" for="s_text">Your Answer</label>
+                  <textarea class="form-control" id="s_text" rows="7"
+                            placeholder="Write your answer here…"></textarea>
+                </div>
+
+                <div id="s_github_section" class="sub-section mb-3 d-none">
+                  <label class="form-label" for="s_github">GitHub Repository URL</label>
+                  <input type="url" class="form-control" id="s_github"
+                         placeholder="https://github.com/user/repo">
+                </div>
+
+                <div id="s_file_section" class="sub-section mb-3 d-none">
+                  <label class="form-label" for="s_file">File</label>
+                  <input type="file" class="form-control" id="s_file">
+                </div>
+
+                <button type="submit" class="btn btn-primary"
+                        id="submissionBtn" data-label="Submit Answer">
+                  Submit Answer
+                </button>
+              </form>
+              <div id="submissionResult" class="response-box"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── 3. Get Results ───────────────────────────────────────────── -->
+        <div class="accordion-item">
+          <h2 class="accordion-header">
+            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
+                    data-bs-target="#collapseResults" aria-expanded="false" aria-controls="collapseResults">
+              <span class="section-badge">3</span>Get Results
+            </button>
+          </h2>
+          <div id="collapseResults" class="accordion-collapse collapse" data-bs-parent="#accordionStandalone">
+            <div class="accordion-body">
+              <p class="text-muted small mb-3">
+                Grading runs in the background after submission — you'll also receive a results email.
+                The Submission ID is auto-filled after a successful submission above.
+              </p>
+
+              <div class="mb-3">
+                <label class="form-label" for="r_id">Submission ID</label>
+                <input type="text" class="form-control font-monospace" id="r_id"
+                       placeholder="UUID — auto-filled after submission">
+              </div>
+
+              <button class="btn btn-primary"
+                      id="resultsBtn" data-label="Get Results"
+                      onclick="getResults()">
+                Get Results
+              </button>
+              <div id="resultsResult" class="response-box"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── 4. Reschedule ────────────────────────────────────────────── -->
+        <div class="accordion-item">
+          <h2 class="accordion-header">
+            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
+                    data-bs-target="#collapseReschedule" aria-expanded="false" aria-controls="collapseReschedule">
+              <span class="section-badge">4</span>Reschedule Assessment
+            </button>
+          </h2>
+          <div id="collapseReschedule" class="accordion-collapse collapse" data-bs-parent="#accordionStandalone">
+            <div class="accordion-body">
+              <p class="text-muted small mb-3">
+                Only scheduled or active assessments can be rescheduled.
+                The reason is classified by AI — medical, interview, and emergency requests
+                are approved; procrastination and lack-of-preparation are denied.
+                Assessment ID and Token are pre-filled from the email link.
+              </p>
+
+              <div class="row g-3 mb-3">
+                <div class="col-sm-7">
+                  <label class="form-label" for="re_id">Assessment ID</label>
+                  <input type="text" class="form-control font-monospace" id="re_id" placeholder="UUID — pre-filled from email link">
+                </div>
+                <div class="col-sm-5">
+                  <label class="form-label" for="re_token">Token</label>
+                  <input type="text" class="form-control font-monospace" id="re_token" placeholder="Pre-filled from email link">
+                </div>
+              </div>
+
+              <form id="rescheduleForm" novalidate>
+                <div class="mb-3">
+                  <label class="form-label" for="re_reason">
+                    Reason
+                    <span class="text-muted fw-normal">(minimum 20 characters)</span>
+                  </label>
+                  <textarea class="form-control" id="re_reason" rows="3"
+                            placeholder="e.g. I have a confirmed medical appointment on the assessment date and cannot attend."
+                            oninput="updateCharCount()"></textarea>
+                  <div class="form-text" id="reCharCount">0 / 20 minimum</div>
+                </div>
+                <button type="submit" class="btn btn-primary"
+                        id="rescheduleBtn" data-label="Request Reschedule">
+                  Request Reschedule
+                </button>
+              </form>
+              <div id="rescheduleResult" class="response-box"></div>
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /accordionStandalone -->
+    </div><!-- /pane-standalone -->
+
+    <!-- ══════════════════════ CURRICULUM UPLOAD ══════════════════════════ -->
+    <div class="tab-pane fade" id="pane-curriculum" role="tabpanel">
+
+      <div class="alert alert-info alert-sm py-2 small mb-3">
+        <strong>Workflow:</strong>
+        Upload a curriculum JSON file (a <code>topics</code> list of assessment/midterm entries) →
+        View Entries to see IDs → Add or Update entries as the syllabus changes →
+        Close/Archive when the curriculum is finished. Everything here hits the API directly —
+        no AI agent needed.
+      </div>
+
+      <div class="mb-4">
+        <label class="form-label" for="cu_upload_id">Curriculum Upload ID</label>
+        <input type="text" class="form-control font-monospace" id="cu_upload_id"
+               placeholder="Auto-filled after upload, or paste an existing one">
+        <div class="form-text">Used by View Entries, Add Entry, and Close/Archive below.</div>
+      </div>
+
+      <div class="accordion" id="accordionCurriculum">
+
+        <!-- ── 1. Upload Curriculum File ────────────────────────────────── -->
+        <div class="accordion-item">
+          <h2 class="accordion-header">
+            <button class="accordion-button" type="button" data-bs-toggle="collapse"
+                    data-bs-target="#collapseUpload" aria-expanded="true" aria-controls="collapseUpload">
+              <span class="section-badge">1</span>Upload Curriculum File
+            </button>
+          </h2>
+          <div id="collapseUpload" class="accordion-collapse collapse show" data-bs-parent="#accordionCurriculum">
+            <div class="accordion-body">
+              <p class="text-muted small mb-3">
+                Uploads a new curriculum: parses every entry, schedules assessments/midterms that
+                are ready, holds any midterm still waiting on resources, and emails the syllabus.
+              </p>
+              <form id="uploadCurriculumForm" novalidate>
+                <div class="mb-3">
+                  <label class="form-label" for="cu_file">Curriculum JSON File <span class="text-danger">*</span></label>
+                  <input type="file" class="form-control" id="cu_file" accept="application/json,.json" required>
+                </div>
+                <button type="submit" class="btn btn-primary"
+                        id="uploadCurriculumBtn" data-label="Upload Curriculum">
+                  Upload Curriculum
+                </button>
+              </form>
+              <div id="uploadCurriculumResult" class="response-box"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── 2. View Entries ───────────────────────────────────────────── -->
+        <div class="accordion-item">
+          <h2 class="accordion-header">
+            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
+                    data-bs-target="#collapseView" aria-expanded="false" aria-controls="collapseView">
+              <span class="section-badge">2</span>View Entries
+            </button>
+          </h2>
+          <div id="collapseView" class="accordion-collapse collapse" data-bs-parent="#accordionCurriculum">
+            <div class="accordion-body">
+              <p class="text-muted small mb-3">
+                Lists every entry in the Curriculum Upload above, with the IDs needed for Update.
+              </p>
+              <button class="btn btn-primary mb-3"
+                      id="viewEntriesBtn" data-label="View Entries" onclick="viewEntries()">
+                View Entries
+              </button>
+              <div id="viewEntriesResult"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── 3. Add Entry ─────────────────────────────────────────────── -->
+        <div class="accordion-item">
+          <h2 class="accordion-header">
+            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
+                    data-bs-target="#collapseAdd" aria-expanded="false" aria-controls="collapseAdd">
+              <span class="section-badge">3</span>Add Entry
+            </button>
+          </h2>
+          <div id="collapseAdd" class="accordion-collapse collapse" data-bs-parent="#accordionCurriculum">
+            <div class="accordion-body">
+              <form id="addEntryForm" novalidate>
+
+                <div class="mb-3">
+                  <label class="form-label" for="ae_topic">Topic <span class="text-danger">*</span></label>
+                  <input type="text" class="form-control" id="ae_topic" required>
+                </div>
+
+                <div class="mb-3">
+                  <label class="form-label" for="ae_type">Entry Type <span class="text-danger">*</span></label>
+                  <select class="form-select" id="ae_type" onchange="toggleAddEntryType()">
+                    <option value="assessment">Assessment</option>
+                    <option value="midterm">Midterm</option>
+                  </select>
+                </div>
+
+                <div class="row g-3 mb-3">
+                  <div class="col-sm-6">
+                    <label class="form-label" for="ae_chapter">Chapter <span class="text-danger">*</span></label>
+                    <input type="text" class="form-control" id="ae_chapter" required>
+                  </div>
+                  <div class="col-sm-6">
+                    <label class="form-label" for="ae_date">Completion Date <span class="text-danger">*</span></label>
+                    <input type="date" class="form-control" id="ae_date" required>
+                  </div>
+                </div>
+
+                <div class="mb-3">
+                  <label class="form-label" for="ae_marks">Max Marks <span class="text-danger">*</span></label>
+                  <input type="number" class="form-control" id="ae_marks" min="1" step="1" required>
+                </div>
+
+                <div id="ae_assessment_fields">
+                  <div class="mb-3">
+                    <label class="form-label" for="ae_resources">Resources
+                      <span class="text-muted fw-normal">(one per line)</span>
+                    </label>
+                    <textarea class="form-control font-monospace" id="ae_resources" rows="3"
+                              placeholder="https://docs.python.org/3/library/asyncio.html"></textarea>
+                  </div>
+                </div>
+
+                <div id="ae_midterm_fields" class="sub-section d-none">
+                  <div class="mb-3">
+                    <label class="form-label" for="ae_known_now">Known-Now Resources
+                      <span class="text-muted fw-normal">(one per line)</span>
+                    </label>
+                    <textarea class="form-control font-monospace" id="ae_known_now" rows="2"></textarea>
+                  </div>
+                  <div class="mb-3">
+                    <label class="form-label" for="ae_pending">Pending Resources
+                      <span class="text-muted fw-normal">(one label per line — filled in later)</span>
+                    </label>
+                    <textarea class="form-control font-monospace" id="ae_pending" rows="2"
+                              placeholder="repo URL — stub a throwaway public repo"></textarea>
+                  </div>
+                  <div class="mb-3">
+                    <label class="form-label" for="ae_probe">Probe Focus
+                      <span class="text-muted fw-normal">(optional)</span>
+                    </label>
+                    <textarea class="form-control" id="ae_probe" rows="2"></textarea>
+                  </div>
+                </div>
+
+                <button type="submit" class="btn btn-primary"
+                        id="addEntryBtn" data-label="Add Entry">
+                  Add Entry
+                </button>
+              </form>
+              <div id="addEntryResult" class="response-box"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── 4. Update Entry ──────────────────────────────────────────── -->
+        <div class="accordion-item">
+          <h2 class="accordion-header">
+            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
+                    data-bs-target="#collapseUpdate" aria-expanded="false" aria-controls="collapseUpdate">
+              <span class="section-badge">4</span>Update Entry
+            </button>
+          </h2>
+          <div id="collapseUpdate" class="accordion-collapse collapse" data-bs-parent="#accordionCurriculum">
+            <div class="accordion-body">
+              <p class="text-muted small mb-3">
+                Only entries with no attempt or grade on record yet can be edited — changing
+                resources or dates after an exam was already generated would corrupt what's on
+                record. Leave a field blank to leave it unchanged.
+              </p>
+
+              <div class="mb-3">
+                <label class="form-label" for="ue_id">Entry ID <span class="text-danger">*</span></label>
+                <input type="text" class="form-control font-monospace" id="ue_id"
+                       placeholder="From View Entries above" required>
+              </div>
+
+              <form id="updateEntryForm" novalidate>
+                <div class="row g-3 mb-3">
+                  <div class="col-sm-6">
+                    <label class="form-label" for="ue_topic">Topic</label>
+                    <input type="text" class="form-control" id="ue_topic" placeholder="Leave blank to keep unchanged">
+                  </div>
+                  <div class="col-sm-6">
+                    <label class="form-label" for="ue_chapter">Chapter</label>
+                    <input type="text" class="form-control" id="ue_chapter" placeholder="Leave blank to keep unchanged">
+                  </div>
+                </div>
+                <div class="row g-3 mb-3">
+                  <div class="col-sm-6">
+                    <label class="form-label" for="ue_date">Completion Date</label>
+                    <input type="date" class="form-control" id="ue_date">
+                  </div>
+                  <div class="col-sm-6">
+                    <label class="form-label" for="ue_marks">Max Marks</label>
+                    <input type="number" class="form-control" id="ue_marks" min="1" step="1"
+                           placeholder="Leave blank to keep unchanged">
+                  </div>
+                </div>
+                <div class="mb-3">
+                  <label class="form-label" for="ue_resources">Resources
+                    <span class="text-muted fw-normal">(assessment-type only — one per line, full replace)</span>
+                  </label>
+                  <textarea class="form-control font-monospace" id="ue_resources" rows="2"
+                            placeholder="Leave blank to keep unchanged"></textarea>
+                </div>
+                <div class="mb-3">
+                  <label class="form-label" for="ue_known_now">Known-Now Resources
+                    <span class="text-muted fw-normal">(midterm-type only — one per line)</span>
+                  </label>
+                  <textarea class="form-control font-monospace" id="ue_known_now" rows="2"
+                            placeholder="Leave blank to keep unchanged"></textarea>
+                </div>
+                <div class="mb-3">
+                  <label class="form-label" for="ue_probe">Probe Focus
+                    <span class="text-muted fw-normal">(midterm-type only)</span>
+                  </label>
+                  <textarea class="form-control" id="ue_probe" rows="2"
+                            placeholder="Leave blank to keep unchanged"></textarea>
+                </div>
+                <button type="submit" class="btn btn-primary"
+                        id="updateEntryBtn" data-label="Update Entry">
+                  Update Entry
+                </button>
+              </form>
+              <div id="updateEntryResult" class="response-box"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── 5. Close / Archive Curriculum ────────────────────────────── -->
+        <div class="accordion-item">
+          <h2 class="accordion-header">
+            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
+                    data-bs-target="#collapseClose" aria-expanded="false" aria-controls="collapseClose">
+              <span class="section-badge">5</span>Close / Archive Curriculum
+            </button>
+          </h2>
+          <div id="collapseClose" class="accordion-collapse collapse" data-bs-parent="#accordionCurriculum">
+            <div class="accordion-body">
+              <p class="text-muted small mb-3">
+                Archives the curriculum upload above: sends one final transcript snapshot to the
+                configured recipients, then permanently cancels every future reminder, exam
+                generation, and transcript send for its entries. This never deletes data —
+                it's a soft archive, not an erasure — but it cannot be undone once sent.
+              </p>
+              <button class="btn btn-danger"
+                      id="closeCurriculumBtn" data-label="Close / Archive Curriculum"
+                      onclick="closeCurriculum()">
+                Close / Archive Curriculum
+              </button>
+              <div id="closeCurriculumResult" class="response-box"></div>
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /accordionCurriculum -->
+    </div><!-- /pane-curriculum -->
+
+  </div><!-- /tab-content -->
 
 </div><!-- /container -->
 
@@ -265,8 +589,9 @@
 
 // ── URL param pre-fill (email deep links) ────────────────────────────────────
 // Assessment emails link to: {APP_BASE_URL}?assessment_id=...&token=...
-// Pre-fills Submit Answer and Reschedule fields, then scrolls to Submit.
-// Also fetches the assessment to check is_midterm, so the separate Part 1
+// Pre-fills Submit Answer and Reschedule fields, expands the Submit Answer
+// accordion item (it's collapsed by default), then scrolls to it. Also
+// fetches the assessment to check is_midterm, so the separate Part 1
 // (assignment) answer field only shows up when it's actually needed.
 document.addEventListener('DOMContentLoaded', async () => {
   const p = new URLSearchParams(window.location.search);
@@ -275,7 +600,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (aid && token) {
     ['s_id', 're_id'].forEach(id => document.getElementById(id).value = aid);
     ['s_token', 're_token'].forEach(id => document.getElementById(id).value = token);
-    document.getElementById('submissionBtn').scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+    const collapseEl = document.getElementById('collapseSubmit');
+    bootstrap.Collapse.getOrCreateInstance(collapseEl, { toggle: false }).show();
+    collapseEl.addEventListener('shown.bs.collapse', () => {
+      document.getElementById('submissionBtn').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, { once: true });
 
     const { ok, data } = await api(
       `/api/v1/assessments/${encodeURIComponent(aid)}?token=${encodeURIComponent(token)}`
@@ -332,6 +662,16 @@ async function api(url, opts = {}) {
   } catch (err) {
     return { ok: false, status: 0, data: { error: String(err) } };
   }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
+function linesToList(text) {
+  return text.split('\n').map(s => s.trim()).filter(Boolean);
 }
 
 // ── 1. Create Curriculum ─────────────────────────────────────────────────────
@@ -510,6 +850,228 @@ document.getElementById('rescheduleForm').addEventListener('submit', async (e) =
   showResult('rescheduleResult', data, !ok);
   setLoading(btn, false);
 });
+
+// ── Curriculum Upload: shared helper ─────────────────────────────────────────
+
+function getUploadId() {
+  return document.getElementById('cu_upload_id').value.trim();
+}
+
+// ── C1. Upload Curriculum File ───────────────────────────────────────────────
+
+document.getElementById('uploadCurriculumForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById('uploadCurriculumBtn');
+  clearResult('uploadCurriculumResult');
+
+  const fileInput = document.getElementById('cu_file');
+  if (!fileInput.files[0]) {
+    showResult('uploadCurriculumResult', 'Please choose a JSON file.', true);
+    return;
+  }
+
+  setLoading(btn, true);
+  showProgress('uploadCurriculumResult', ['Parsing entries and scheduling what’s ready'], 0);
+
+  const fd = new FormData();
+  fd.append('file', fileInput.files[0]);
+
+  const { ok, data } = await api('/api/v1/curriculum-uploads/', { method: 'POST', body: fd });
+  showResult('uploadCurriculumResult', data, !ok);
+  if (ok && data.upload_id) {
+    document.getElementById('cu_upload_id').value = data.upload_id;
+  }
+  setLoading(btn, false);
+});
+
+// ── C2. View Entries ──────────────────────────────────────────────────────────
+
+async function viewEntries() {
+  const btn = document.getElementById('viewEntriesBtn');
+  const box = document.getElementById('viewEntriesResult');
+  box.innerHTML = '';
+
+  const uploadId = getUploadId();
+  if (!uploadId) {
+    box.innerHTML = '<div class="response-box response-err" style="display:block">' +
+      'Curriculum Upload ID is required — upload a file above or paste an existing ID.</div>';
+    return;
+  }
+
+  setLoading(btn, true);
+  const { ok, data } = await api(`/api/v1/curriculum-uploads/${encodeURIComponent(uploadId)}`);
+  setLoading(btn, false);
+
+  if (!ok) {
+    box.innerHTML = '<div class="response-box response-err" style="display:block">' +
+      escapeHtml(JSON.stringify(data, null, 2)) + '</div>';
+    return;
+  }
+
+  if (!data.entries.length) {
+    box.innerHTML = '<p class="text-muted small mb-0">No entries in this upload.</p>';
+    return;
+  }
+
+  const rows = data.entries.map(en => `
+    <tr>
+      <td class="font-monospace small">${escapeHtml(en.id)}</td>
+      <td>${escapeHtml(en.topic)}</td>
+      <td><span class="badge text-bg-secondary">${escapeHtml(en.entry_type)}</span></td>
+      <td>${escapeHtml(en.chapter_label)}</td>
+      <td>${escapeHtml(en.completion_date)}</td>
+      <td>${en.max_marks}</td>
+      <td>${en.resources_hold ? '<span class="badge text-bg-warning">held</span>' : ''}</td>
+      <td><button type="button" class="btn btn-sm btn-outline-primary" onclick="editEntry('${en.id}')">Edit →</button></td>
+    </tr>`).join('');
+
+  box.innerHTML = `
+    <div class="table-responsive">
+      <table class="table table-sm align-middle">
+        <thead>
+          <tr><th>ID</th><th>Topic</th><th>Type</th><th>Chapter</th><th>Due</th><th>Marks</th><th></th><th></th></tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+function editEntry(id) {
+  document.getElementById('ue_id').value = id;
+  const collapseEl = document.getElementById('collapseUpdate');
+  bootstrap.Collapse.getOrCreateInstance(collapseEl, { toggle: false }).show();
+  collapseEl.addEventListener('shown.bs.collapse', () => {
+    document.getElementById('ue_id').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, { once: true });
+}
+
+// ── C3. Add Entry ─────────────────────────────────────────────────────────────
+
+function toggleAddEntryType() {
+  const isMidterm = document.getElementById('ae_type').value === 'midterm';
+  document.getElementById('ae_assessment_fields').classList.toggle('d-none', isMidterm);
+  document.getElementById('ae_midterm_fields').classList.toggle('d-none', !isMidterm);
+}
+
+document.getElementById('addEntryForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById('addEntryBtn');
+  clearResult('addEntryResult');
+
+  const uploadId = getUploadId();
+  if (!uploadId) {
+    showResult('addEntryResult', 'Curriculum Upload ID is required — upload a file above or paste an existing ID.', true);
+    return;
+  }
+
+  const type = document.getElementById('ae_type').value;
+  const entry = {
+    topic: document.getElementById('ae_topic').value.trim(),
+    type: type,
+    chapter: document.getElementById('ae_chapter').value.trim(),
+    completion_date: document.getElementById('ae_date').value,
+    max_marks: Number(document.getElementById('ae_marks').value),
+  };
+
+  if (type === 'assessment') {
+    entry.resources = linesToList(document.getElementById('ae_resources').value);
+  } else {
+    entry.resources = {
+      known_now: linesToList(document.getElementById('ae_known_now').value),
+      pending_completion: linesToList(document.getElementById('ae_pending').value),
+    };
+    const probe = document.getElementById('ae_probe').value.trim();
+    if (probe) entry.probe_focus = probe;
+  }
+
+  setLoading(btn, true);
+  showProgress('addEntryResult', ['Adding and scheduling entry'], 0);
+
+  const { ok, data } = await api(`/api/v1/curriculum-uploads/${encodeURIComponent(uploadId)}/entries`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ entry }),
+  });
+  showResult('addEntryResult', data, !ok);
+  setLoading(btn, false);
+});
+
+// ── C4. Update Entry ──────────────────────────────────────────────────────────
+
+document.getElementById('updateEntryForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById('updateEntryBtn');
+  clearResult('updateEntryResult');
+
+  const id = document.getElementById('ue_id').value.trim();
+  if (!id) {
+    showResult('updateEntryResult', 'Entry ID is required.', true);
+    return;
+  }
+
+  const updates = {};
+  const topic = document.getElementById('ue_topic').value.trim();
+  if (topic) updates.topic = topic;
+  const chapter = document.getElementById('ue_chapter').value.trim();
+  if (chapter) updates.chapter_label = chapter;
+  const dateVal = document.getElementById('ue_date').value;
+  if (dateVal) updates.target_completion_date = dateVal;
+  const marks = document.getElementById('ue_marks').value;
+  if (marks) updates.max_marks = Number(marks);
+  const resources = linesToList(document.getElementById('ue_resources').value);
+  if (resources.length) updates.resources = resources;
+  const knownNow = linesToList(document.getElementById('ue_known_now').value);
+  if (knownNow.length) updates.known_now = knownNow;
+  const probe = document.getElementById('ue_probe').value.trim();
+  if (probe) updates.probe_focus = probe;
+
+  if (Object.keys(updates).length === 0) {
+    showResult('updateEntryResult', 'Change at least one field before updating.', true);
+    return;
+  }
+
+  setLoading(btn, true);
+  showProgress('updateEntryResult', ['Applying update and rescheduling'], 0);
+
+  const { ok, data } = await api(`/api/v1/curriculum-uploads/entries/${encodeURIComponent(id)}`, {
+    method:  'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ updates }),
+  });
+  showResult('updateEntryResult', data, !ok);
+  setLoading(btn, false);
+});
+
+// ── C5. Close / Archive Curriculum ────────────────────────────────────────────
+
+async function closeCurriculum() {
+  const btn = document.getElementById('closeCurriculumBtn');
+  clearResult('closeCurriculumResult');
+
+  const uploadId = getUploadId();
+  if (!uploadId) {
+    showResult('closeCurriculumResult', 'Curriculum Upload ID is required.', true);
+    return;
+  }
+  const sure = confirm(
+    `Archive curriculum upload ${uploadId}?\n\n` +
+    'This sends a final transcript snapshot and permanently cancels every future ' +
+    'reminder, exam generation, and transcript send for it. This cannot be undone.'
+  );
+  if (!sure) return;
+
+  setLoading(btn, true);
+  const steps = ['Sending final transcript', 'Cancelling future jobs'];
+  showProgress('closeCurriculumResult', steps, 0);
+  const timer = setTimeout(() => showProgress('closeCurriculumResult', steps, 1), 2500);
+
+  const { ok, data } = await api(`/api/v1/curriculum-uploads/${encodeURIComponent(uploadId)}/close`, {
+    method: 'POST',
+  });
+  clearTimeout(timer);
+  showResult('closeCurriculumResult', data, !ok);
+  setLoading(btn, false);
+}
 </script>
 </body>
 </html>

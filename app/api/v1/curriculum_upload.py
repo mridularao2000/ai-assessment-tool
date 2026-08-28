@@ -8,6 +8,8 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from app.dependencies import get_curriculum_upload_service
 from app.exceptions import CurriculumUploadValidationError, InvalidStateError, NotFoundError
 from app.schemas.curriculum_upload import (
+    AddEntryRequest,
+    CloseUploadResponse,
     CurriculumEntrySummary,
     CurriculumUploadDetailResponse,
     CurriculumUploadResponse,
@@ -17,6 +19,7 @@ from app.schemas.curriculum_upload import (
     TranscriptChapterGroupResponse,
     TranscriptResponse,
     TranscriptRowResponse,
+    UpdateEntryRequest,
 )
 from app.services.curriculum_upload_service import CurriculumUploadService
 from app.services.gpa_service import compute_gpa
@@ -119,7 +122,7 @@ def get_transcript(
                     TranscriptRowResponse(
                         row_id=r.row_id, topic=r.topic, chapter_number=r.chapter_number,
                         max_marks=r.max_marks, status_label=r.status_label,
-                        points=r.points, retake_note=r.retake_note,
+                        points=r.points, retake_note=r.retake_note, was_late=r.was_late,
                     )
                     for r in g.rows
                 ],
@@ -134,6 +137,72 @@ def get_transcript(
         gpa=content.gpa,
         course_material_captured_at=content.course_material_captured_at,
     )
+
+
+@router.post("/{upload_id}/entries", response_model=CurriculumEntrySummary, status_code=201)
+def add_entry(
+    upload_id: str,
+    body: AddEntryRequest,
+    curriculum_upload_svc: Annotated[CurriculumUploadService, Depends(get_curriculum_upload_service)],
+) -> CurriculumEntrySummary:
+    try:
+        curriculum = curriculum_upload_svc.add_entry(upload_id, body.entry)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except (InvalidStateError, CurriculumUploadValidationError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return CurriculumEntrySummary(
+        id=curriculum.id,
+        topic=curriculum.topic,
+        entry_type=curriculum.entry_type.value if curriculum.entry_type else "",
+        chapter_label=curriculum.chapter_label or "",
+        completion_date=curriculum.target_completion_date,
+        max_marks=curriculum.max_marks or 0.0,
+        resources_hold=curriculum.resources_hold,
+    )
+
+
+@router.patch("/entries/{curriculum_id}", response_model=CurriculumEntrySummary)
+def update_entry(
+    curriculum_id: str,
+    body: UpdateEntryRequest,
+    curriculum_upload_svc: Annotated[CurriculumUploadService, Depends(get_curriculum_upload_service)],
+) -> CurriculumEntrySummary:
+    try:
+        curriculum = curriculum_upload_svc.update_entry(curriculum_id, body.updates)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except InvalidStateError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return CurriculumEntrySummary(
+        id=curriculum.id,
+        topic=curriculum.topic,
+        entry_type=curriculum.entry_type.value if curriculum.entry_type else "",
+        chapter_label=curriculum.chapter_label or "",
+        completion_date=curriculum.target_completion_date,
+        max_marks=curriculum.max_marks or 0.0,
+        resources_hold=curriculum.resources_hold,
+    )
+
+
+@router.post("/{upload_id}/close", response_model=CloseUploadResponse)
+def close_upload(
+    upload_id: str,
+    curriculum_upload_svc: Annotated[CurriculumUploadService, Depends(get_curriculum_upload_service)],
+) -> CloseUploadResponse:
+    """Archive this curriculum_upload: sends the one final transcript
+    snapshot, then permanently cancels every future scheduled action for
+    its entries. Soft-delete only — never removes the row."""
+    try:
+        upload = curriculum_upload_svc.close_upload(upload_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except InvalidStateError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return CloseUploadResponse(upload_id=upload.id, closed_at=upload.closed_at)
 
 
 @router.patch(

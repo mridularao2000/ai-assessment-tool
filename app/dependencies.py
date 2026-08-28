@@ -2,10 +2,20 @@
 
 Singletons (created once at module load):
   _scheduler_adapter — APSchedulerAdapter instance shared across requests
-  _llm               — AnthropicLLMAdapter when ANTHROPIC_API_KEY is set,
-                       StubLLMAdapter otherwise (fails loudly on any call)
-  _email             — ResendEmailAdapter when RESEND_API_KEY is set,
-                       StubEmailAdapter otherwise (fails loudly on any call)
+  _llm               — FakeLLMAdapter when settings.test_mode is true
+                       (isolated-verification harness only — canned
+                       responses, no network call), else AnthropicLLMAdapter
+                       when ANTHROPIC_API_KEY is set, else StubLLMAdapter
+                       (fails loudly on any call)
+  _email             — FakeEmailAdapter when settings.test_mode is true
+                       (same isolated-verification harness — safe no-op,
+                       no network call), else ResendEmailAdapter when
+                       RESEND_API_KEY is set, else StubEmailAdapter (fails
+                       loudly on any call)
+
+  settings.test_mode is the ONE flag that neuters every outbound
+  integration at once — see app.config.Settings.test_mode for why this
+  needs to be single and explicit rather than per-adapter.
 
 Per-request dependencies (instantiated per request via Depends):
   get_db                — SQLAlchemy Session
@@ -112,7 +122,11 @@ _scheduler_adapter = APSchedulerAdapter()
 
 
 def _build_llm() -> LLMInterface:
-    if get_settings().anthropic_api_key:
+    settings = get_settings()
+    if settings.test_mode:
+        from app.adapters.fake_llm import FakeLLMAdapter
+        return FakeLLMAdapter()  # type: ignore[return-value]
+    if settings.anthropic_api_key:
         from app.adapters.anthropic_llm import AnthropicLLMAdapter
         return AnthropicLLMAdapter()  # type: ignore[return-value]
     return StubLLMAdapter()  # type: ignore[return-value]
@@ -122,7 +136,11 @@ _llm: LLMInterface = _build_llm()
 
 
 def _build_email() -> EmailInterface:
-    if get_settings().resend_api_key:
+    settings = get_settings()
+    if settings.test_mode:
+        from app.adapters.fake_email import FakeEmailAdapter
+        return FakeEmailAdapter()  # type: ignore[return-value]
+    if settings.resend_api_key:
         from app.adapters.resend_email import ResendEmailAdapter
         return ResendEmailAdapter()  # type: ignore[return-value]
     return StubEmailAdapter()  # type: ignore[return-value]

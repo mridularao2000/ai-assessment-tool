@@ -8,6 +8,19 @@ Provides:
   - DB seed helpers (plain functions, importable in test modules)
 """
 
+import os
+
+# Must run before ANY `app.*` import in this file (or anything it pulls
+# in transitively, e.g. app.main -> app.database -> app.config). Settings
+# is cached via @lru_cache on first call, and app.database.engine is a
+# process-global singleton bound to database_url at import time — FastAPI's
+# TestClient triggers app.main.lifespan on the first request even without
+# a `with` block, and without this, that engine defaults to
+# sqlite:///./assessment.db (the real tracked dev DB), so create_all()/
+# seed_prompt_templates() would silently run against it instead of the
+# isolated test_engine below. See app/config.py's run_schema_bootstrap.
+os.environ["RUN_SCHEMA_BOOTSTRAP"] = "false"
+
 import unittest.mock
 import uuid
 from datetime import date, datetime, timedelta
@@ -38,6 +51,7 @@ from app.interfaces.llm import (
     MidtermGenerationResult,
     MidtermGradingRequest,
     MidtermGradingResult,
+    LLMValidationError,
     MidtermRetestGenerationRequest,
     RescheduleClassificationRequest,
     RescheduleClassificationResult,
@@ -317,6 +331,19 @@ class FakeLLMBelowThreshold(FakeLLM):
             weak_areas=["state management internals", "project architecture rationale"],
             overall_feedback="Needs improvement on both cumulative concepts and project defense.",
         )
+
+
+class FakeLLMRetestFails(FakeLLMBelowThreshold):
+    """Grades below threshold (like FakeLLMBelowThreshold), but generate_retest
+    raises LLMValidationError — reproduces the real failure mode where the
+    model exhausts its token budget on tool calls before producing retest
+    content, to prove grade_submission_job's retest step is non-fatal."""
+
+    def generate_retest(self, req: RetestGenerationRequest) -> AssessmentGenerationResult:
+        raise LLMValidationError("No text block in response content: [...]")
+
+    def generate_midterm_retest(self, req: MidtermRetestGenerationRequest) -> MidtermGenerationResult:
+        raise LLMValidationError("No text block in response content: [...]")
 
 
 class FakeLLMDenied(FakeLLM):

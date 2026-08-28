@@ -53,6 +53,7 @@ class APSchedulerAdapter:
             self._scheduler.start()
         self._schedule_monthly_token_grant()
         self._schedule_pending_midterm_recheck()
+        self._schedule_biweekly_transcript()
 
     def _schedule_monthly_token_grant(self) -> None:
         """Register the recurring monthly late-submission token grant.
@@ -89,6 +90,29 @@ class APSchedulerAdapter:
             hour=6,
             minute=0,
             id="recheck_pending_midterms_daily",
+            replace_existing=True,
+        )
+
+    def _schedule_biweekly_transcript(self) -> None:
+        """Register the recurring biweekly transcript send to the secondary
+        recipient — global, argument-less, fixed-id, same shape as the
+        monthly token grant and daily recheck.
+
+        Uses trigger="interval" rather than "cron": cron is calendar-based
+        (day-of-month / day-of-week) and can't express "every N days from
+        an arbitrary anchor" the way a fixed 14-day cadence needs — interval
+        is APScheduler's mechanism for that, everything else about the
+        registration (fixed id, replace_existing, called from start()) is
+        identical to the other two recurring jobs.
+        """
+        from app.jobs.send_biweekly_transcript_job import send_biweekly_transcript_job
+
+        settings = get_settings()
+        self._scheduler.add_job(
+            send_biweekly_transcript_job,
+            trigger="interval",
+            days=settings.transcript_secondary_interval_days,
+            id="send_biweekly_transcript",
             replace_existing=True,
         )
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Optional
+
 from sqlalchemy.orm import Session, joinedload
 
 from app.config import get_settings
@@ -159,12 +161,22 @@ class EmailService:
             midterms=content.midterms,
         ))
 
-    def send_transcript_email(self, upload_id: str) -> None:
+    def send_transcript_email(
+        self, upload_id: str, recipient_emails: Optional[list[str]] = None
+    ) -> None:
+        """Send the current transcript for one upload.
+
+        recipient_emails is None for the per-event trigger (grade_submission_job)
+        — sends to the primary (user_email) only. The biweekly secondary-copy
+        job (send_biweekly_transcript_job) passes recipient_emails explicitly
+        so the secondary recipient is never touched by the per-event path.
+        """
         content = compute_transcript(self.db, upload_id)
         settings = get_settings()
+        recipients = recipient_emails if recipient_emails is not None else [settings.user_email]
 
         self.email.send_transcript_email(TranscriptEmailData(
-            recipient_emails=settings.results_recipient_emails,
+            recipient_emails=recipients,
             upload_id=content.upload_id,
             source_filename=content.source_filename,
             entry_groups=content.chapter_groups,

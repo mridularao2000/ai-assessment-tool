@@ -25,7 +25,9 @@ from app.services.grading_service import GradingService
 from tests.conftest import (
     FakeLLM,
     FakeLLMBelowThreshold,
+    FakeLLMRetestFails,
     FakeScheduler,
+    RecordingEmailAdapter,
     TestSessionLocal,
     make_assessment,
     make_curriculum,
@@ -342,6 +344,39 @@ class TestRetakeCap:
         )
         assert [a.attempt_number for a in assessments] == [1, 2]
         assert len(fake_scheduler.schedule_assessment_jobs_calls) == 1
+
+    def test_retest_generation_failure_does_not_block_results_email(self, db, monkeypatch):
+        """Regression test: create_retest() raising (e.g. the model exhausting
+        its token budget on tool calls, surfaced as LLMValidationError) must
+        not crash the whole job. Before the fix, this exception propagated
+        out of grade_submission_job uncaught, skipping the results/transcript
+        email sends below it and leaving no retest AND no notification —
+        the grade was recorded but everything downstream silently vanished.
+        """
+        from app.jobs.grade_submission_job import grade_submission_job
+
+        seed_prompt_templates(db)
+        curriculum = make_curriculum(db)
+        assessment, _ = make_assessment(db, curriculum, status=AssessmentStatus.active)
+        submission = make_submission(db, assessment)
+        fake_scheduler = FakeScheduler()
+        self._patch_job(monkeypatch, FakeLLMRetestFails(), fake_scheduler)
+        email = RecordingEmailAdapter()
+        monkeypatch.setattr("app.jobs.grade_submission_job._email", email)
+
+        grade_submission_job(submission.id)  # must not raise
+
+        db.expire_all()
+        # Grade is still recorded despite the downstream retest failure.
+        grade = db.query(Grade).filter_by(submission_id=submission.id).first()
+        assert grade is not None
+        assert grade.mastery_score == 70.0
+        # No retest was created and no job was scheduled for one.
+        assessments = db.query(Assessment).filter_by(curriculum_id=curriculum.id).all()
+        assert len(assessments) == 1
+        assert fake_scheduler.schedule_assessment_jobs_calls == []
+        # The results email still fired — this is the actual bug fix.
+        assert len(email.results_calls) == 1
 
     def test_below_threshold_second_attempt_reaches_cap_no_third(self, db, monkeypatch):
         from app.jobs.grade_submission_job import grade_submission_job

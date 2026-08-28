@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.config import get_settings
 from app.exceptions import CurriculumUploadValidationError, InvalidStateError, NotFoundError
 from app.interfaces.email import EmailInterface
+from app.interfaces.scheduler import AssessmentJobIds
 from app.models._utils import utcnow
 from app.models.assessment import Assessment, AssessmentStatus
 from app.models.curriculum import Curriculum, CurriculumEntryType, CurriculumStatus
@@ -248,65 +249,9 @@ class CurriculumUploadService:
         self.db.add(upload)
 
         today = date.today()
-        created: list[Curriculum] = []
-        for entry in parsed_entries:
-            curriculum = Curriculum(
-                id=str(uuid.uuid4()),
-                topic=entry.topic,
-                target_completion_date=entry.completion_date,
-                status=CurriculumStatus.ready,
-                entry_type=entry.entry_type,
-                upload_id=upload.id,
-                chapter_label=entry.chapter_label,
-                max_marks=entry.max_marks,
-            )
-            self.db.add(curriculum)
-
-            if entry.entry_type == CurriculumEntryType.assessment:
-                for resource_label in entry.resources or []:
-                    self.db.add(
-                        Resource(
-                            curriculum_id=curriculum.id,
-                            type=ResourceType.note,
-                            source_ref=resource_label,
-                            raw_content=None,
-                        )
-                    )
-            else:
-                labels_by_slug, slots = _build_pending_slots(
-                    entry.pending_completion_labels_raw or []
-                )
-                # Default split: Part 2 (finish the project and submit) = 70%,
-                # Part 1 (pass the assignment — cumulative questions) = 30%.
-                # Either can be overridden per-entry via part1_max_marks/
-                # part2_max_marks in the upload file.
-                part1 = (
-                    entry.part1_max_marks
-                    if entry.part1_max_marks is not None
-                    else entry.max_marks * 0.30
-                )
-                part2 = (
-                    entry.part2_max_marks
-                    if entry.part2_max_marks is not None
-                    else entry.max_marks * 0.70
-                )
-                self.db.add(
-                    MidtermDetail(
-                        curriculum_id=curriculum.id,
-                        known_now=entry.known_now or [],
-                        pending_completion_labels=labels_by_slug,
-                        pending_completion_slots=slots,
-                        probe_focus=entry.probe_focus,
-                        special_case=entry.special_case,
-                        part1_max_marks=part1,
-                        part2_max_marks=part2,
-                    )
-                )
-                all_filled = all(v is not None for v in slots.values())
-                if entry.completion_date <= today and not all_filled:
-                    curriculum.resources_hold = True
-
-            created.append(curriculum)
+        created: list[Curriculum] = [
+            self._create_entry(upload.id, entry, today) for entry in parsed_entries
+        ]
 
         self.db.commit()
         for c in created:
@@ -331,8 +276,232 @@ class CurriculumUploadService:
 
         return upload
 
+    def _create_entry(self, upload_id: str, entry: _ParsedEntry, today: date) -> Curriculum:
+        """Build one Curriculum row (+ its Resource or MidtermDetail
+        children) from a parsed entry. Shared by ingest() (many entries at
+        once) and add_entry() (one entry into an existing upload) — the
+        per-entry construction logic must stay identical between the two,
+        or an added entry could end up subtly different from one that
+        arrived with the original upload.
+        """
+        curriculum = Curriculum(
+            id=str(uuid.uuid4()),
+            topic=entry.topic,
+            target_completion_date=entry.completion_date,
+            status=CurriculumStatus.ready,
+            entry_type=entry.entry_type,
+            upload_id=upload_id,
+            chapter_label=entry.chapter_label,
+            max_marks=entry.max_marks,
+        )
+        self.db.add(curriculum)
+
+        if entry.entry_type == CurriculumEntryType.assessment:
+            for resource_label in entry.resources or []:
+                self.db.add(
+                    Resource(
+                        curriculum_id=curriculum.id,
+                        type=ResourceType.note,
+                        source_ref=resource_label,
+                        raw_content=None,
+                    )
+                )
+        else:
+            labels_by_slug, slots = _build_pending_slots(
+                entry.pending_completion_labels_raw or []
+            )
+            # Default split: Part 2 (finish the project and submit) = 70%,
+            # Part 1 (pass the assignment — cumulative questions) = 30%.
+            # Either can be overridden per-entry via part1_max_marks/
+            # part2_max_marks in the upload file.
+            part1 = (
+                entry.part1_max_marks
+                if entry.part1_max_marks is not None
+                else entry.max_marks * 0.30
+            )
+            part2 = (
+                entry.part2_max_marks
+                if entry.part2_max_marks is not None
+                else entry.max_marks * 0.70
+            )
+            self.db.add(
+                MidtermDetail(
+                    curriculum_id=curriculum.id,
+                    known_now=entry.known_now or [],
+                    pending_completion_labels=labels_by_slug,
+                    pending_completion_slots=slots,
+                    probe_focus=entry.probe_focus,
+                    special_case=entry.special_case,
+                    part1_max_marks=part1,
+                    part2_max_marks=part2,
+                )
+            )
+            all_filled = all(v is not None for v in slots.values())
+            if entry.completion_date <= today and not all_filled:
+                curriculum.resources_hold = True
+
+        return curriculum
+
     def assemble_part1_pool(self, curriculum: Curriculum) -> tuple[list[Curriculum], bool]:
         return assemble_part1_pool(self.db, curriculum)
+
+    def add_entry(self, upload_id: str, entry_raw: dict) -> Curriculum:
+        """Add one new entry to an existing, still-open curriculum_upload.
+
+        Uses the exact same per-entry parse/create/schedule pipeline as
+        ingest() (one entry instead of a whole file), so an entry added
+        after the fact behaves identically to one that arrived with the
+        original upload — same validation, same hold/scheduling logic.
+
+        Raises:
+            NotFoundError: upload_id doesn't exist.
+            InvalidStateError: the upload is closed.
+            CurriculumUploadValidationError: the entry fails validation.
+        """
+        upload = self.get_upload(upload_id)
+        if upload.closed_at is not None:
+            raise InvalidStateError(
+                f"CurriculumUpload {upload_id!r} is closed — no new entries can be added."
+            )
+
+        parsed = _parse_entries([entry_raw])[0]
+        curriculum = self._create_entry(upload.id, parsed, date.today())
+        self.db.commit()
+        self.db.refresh(curriculum)
+
+        email_service = EmailService(self.db, self.email)
+        if curriculum.resources_hold:
+            self.send_hold_reminder(curriculum, email_service)
+
+        self.schedule_ready_entries()
+        self.db.refresh(curriculum)
+        return curriculum
+
+    def _is_editable(self, curriculum: Curriculum) -> bool:
+        """True if this entry hasn't reached its exam window yet — no
+        Assessment exists for it, or the sole Assessment is still
+        `scheduled` (job registered, content not yet generated, exam not
+        yet sent). Any attempt or grade on record means the exam was
+        already generated from this entry's current resources/dates, or a
+        submission already references it — editing now would silently
+        corrupt what's already on record, so update_entry() refuses it
+        outright rather than allowing it.
+        """
+        return all(a.status == AssessmentStatus.scheduled for a in curriculum.assessments)
+
+    def update_entry(self, curriculum_id: str, updates: dict) -> Curriculum:
+        """Edit an entry that hasn't reached its exam window yet.
+
+        Allowed fields: topic, chapter_label, target_completion_date,
+        max_marks; resources (assessment-type, full replace); known_now/
+        probe_focus (midterm-type). pending_completion slots are NOT
+        editable here — that's fill_pending_resources()'s dedicated flow.
+
+        If the entry already has a not-yet-fired Assessment row (status
+        scheduled), it's cancelled and deleted so schedule_ready_entries()
+        recreates it fresh against the new data — nothing user-facing has
+        happened yet for that row (deferred generation means its
+        assessment_text is still None), so there's nothing to corrupt.
+
+        Raises:
+            NotFoundError: curriculum_id doesn't exist.
+            InvalidStateError: the entry already has an attempt or grade on
+                record (see _is_editable), its upload is closed, or an
+                unknown/non-editable field was supplied.
+        """
+        curriculum = self.db.get(Curriculum, curriculum_id)
+        if curriculum is None:
+            raise NotFoundError(f"Curriculum entry {curriculum_id!r} not found.")
+        if curriculum.upload is not None and curriculum.upload.closed_at is not None:
+            raise InvalidStateError(
+                f"Curriculum entry {curriculum_id!r} belongs to a closed curriculum "
+                "and cannot be modified."
+            )
+        if not self._is_editable(curriculum):
+            raise InvalidStateError(
+                f"Curriculum entry {curriculum_id!r} already has an attempt or grade on "
+                "record — it cannot be silently modified. Changing its resources or "
+                "dates after an exam was already generated from them would corrupt "
+                "what's already on record."
+            )
+
+        for assessment in list(curriculum.assessments):
+            if assessment.scheduled_job_ids:
+                job_ids = AssessmentJobIds(**assessment.scheduled_job_ids)
+                self.scheduler_service.cancel_jobs_for_assessment(job_ids)
+            self.db.delete(assessment)
+
+        simple_fields = {"topic", "chapter_label", "target_completion_date", "max_marks"}
+        for field, value in updates.items():
+            if field == "resources":
+                if curriculum.entry_type != CurriculumEntryType.assessment:
+                    raise InvalidStateError(
+                        "'resources' is only editable on assessment-type entries "
+                        "(midterm entries use known_now/probe_focus)."
+                    )
+                for resource in list(curriculum.resources):
+                    self.db.delete(resource)
+                for label in value:
+                    self.db.add(Resource(
+                        curriculum_id=curriculum.id, type=ResourceType.note,
+                        source_ref=label, raw_content=None,
+                    ))
+            elif field in ("known_now", "probe_focus"):
+                if curriculum.midterm_detail is None:
+                    raise InvalidStateError(f"{field!r} is only editable on midterm-type entries.")
+                setattr(curriculum.midterm_detail, field, value)
+            elif field in simple_fields:
+                if field == "target_completion_date" and isinstance(value, str):
+                    value = date.fromisoformat(value)
+                setattr(curriculum, field, value)
+            else:
+                raise InvalidStateError(f"Unknown or non-editable field {field!r}.")
+
+        self.db.commit()
+        self.db.refresh(curriculum)
+
+        self.schedule_ready_entries()
+        self.db.refresh(curriculum)
+        return curriculum
+
+    def close_upload(self, upload_id: str) -> CurriculumUpload:
+        """Archive (soft-delete) a curriculum_upload — never hard-deleted,
+        since the whole point of a transcript is a historical record.
+
+        Order matters: sends the ONE final transcript snapshot FIRST
+        (capturing this upload's exact final state, to the currently
+        configured primary recipient — recipients are global/shared by
+        design, same as every other transcript send); only if that
+        succeeds does it cancel every still-pending scheduled action
+        (reminders, exam generation, expiry checks) across every entry in
+        this upload, then mark it closed. A failed final-send leaves the
+        upload open and its jobs untouched, rather than silently closing
+        without the record being sent — the caller can retry.
+
+        Once closed_at is set, send_biweekly_transcript_job and
+        recheck_pending_midterms_job both skip this upload's entries
+        permanently — see their queries.
+
+        Raises:
+            NotFoundError: upload_id doesn't exist.
+            InvalidStateError: already closed.
+        """
+        upload = self.get_upload(upload_id)
+        if upload.closed_at is not None:
+            raise InvalidStateError(f"CurriculumUpload {upload_id!r} is already closed.")
+
+        EmailService(self.db, self.email).send_transcript_email(upload_id)
+
+        for curriculum in upload.entries:
+            for assessment in curriculum.assessments:
+                if assessment.scheduled_job_ids:
+                    job_ids = AssessmentJobIds(**assessment.scheduled_job_ids)
+                    self.scheduler_service.cancel_jobs_for_assessment(job_ids)
+
+        upload.closed_at = utcnow()
+        self.db.commit()
+        self.db.refresh(upload)
+        return upload
 
     def schedule_ready_entries(self) -> list[Assessment]:
         """Schedule every upload entry that isn't held, in one of two ways.
@@ -463,6 +632,11 @@ class CurriculumUploadService:
         curriculum = self.db.get(Curriculum, curriculum_id)
         if curriculum is None or curriculum.midterm_detail is None:
             raise NotFoundError(f"Midterm curriculum entry {curriculum_id!r} not found.")
+        if curriculum.upload is not None and curriculum.upload.closed_at is not None:
+            raise InvalidStateError(
+                f"Curriculum entry {curriculum_id!r} belongs to a closed curriculum "
+                "and cannot be modified."
+            )
 
         detail = curriculum.midterm_detail
         slots = dict(detail.pending_completion_slots)

@@ -190,7 +190,10 @@ class TestRetroactiveExpiredAssessments:
         assert refreshed.status == AssessmentStatus.expired  # viewing doesn't activate it
 
         from app.models.late_submission_token import LateSubmissionToken
-        db.add_all([LateSubmissionToken(), LateSubmissionToken()])
+        db.add_all([
+            LateSubmissionToken(curriculum_upload_id=upload.id),
+            LateSubmissionToken(curriculum_upload_id=upload.id),
+        ])
         db.commit()
 
         submit_response = client.post("/api/v1/submissions/", data={

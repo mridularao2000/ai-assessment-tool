@@ -34,3 +34,11 @@ class LateSubmissionToken(Base):
     used_by_assessment_id: Mapped[Optional[str]] = mapped_column(
         String(36), ForeignKey("assessments.id"), nullable=True, default=None
     )
+    # Each curriculum_upload gets its own independent 2-per-month pool —
+    # NULL means the pool for standalone assessments (entry_type is None,
+    # never belongs to an upload). Spending/granting/balance are always
+    # scoped by this column (see LateTokenService) so two curricula (or a
+    # curriculum and standalone) never contend for the same tokens.
+    curriculum_upload_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("curriculum_uploads.id"), nullable=True, default=None
+    )

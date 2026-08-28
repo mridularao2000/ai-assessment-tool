@@ -79,6 +79,17 @@ class Assessment(Base):
     # APScheduler job ID map: {"send_reminder": id, "send_assessment": id, "expire": id}
     # Written by SchedulerService; used for targeted cancellation on reschedule.
     scheduled_job_ids: Mapped[Optional[dict]] = mapped_column(JSON, default=None)
+    # TOCTOU guard for send_assessment_job: claimed atomically (an
+    # UPDATE...WHERE send_job_claimed_at IS NULL) before any generation/send
+    # work, so two concurrent executions for the same assessment_id (e.g. a
+    # manual retry racing a still-in-flight scheduled firing — APScheduler's
+    # own max_instances=1 only stops the SAME job_id from double-running
+    # through the scheduler itself, not an out-of-band re-invocation) can't
+    # both generate content and both send a duplicate email. Released back
+    # to None on failure so a genuine retry after a crash isn't permanently
+    # locked out; left set on success (nothing legitimately re-invokes this
+    # job for an already-sent assessment).
+    send_job_claimed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=utcnow
     )

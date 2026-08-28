@@ -43,6 +43,13 @@ class CurriculumUpload(Base):
     # filled in after upload). See syllabus_builder.serialize_syllabus_content.
     course_material_snapshot: Mapped[Optional[dict]] = mapped_column(JSON, default=None)
     course_material_captured_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=None)
+    # Soft-delete/archive marker — None means open/active. Set once, by
+    # CurriculumUploadService.close_upload(), which sends the one final
+    # transcript snapshot and cancels every still-pending scheduled action
+    # for this upload's entries before setting this. Never hard-deleted —
+    # a transcript is a historical record; erasing the row would defeat
+    # the point of having one.
+    closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=None)
 
     entries: Mapped[list["Curriculum"]] = relationship(
         "Curriculum", back_populates="upload"

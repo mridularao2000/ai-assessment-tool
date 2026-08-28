@@ -29,26 +29,28 @@ from app.dependencies import get_scheduler_adapter
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    from app.database import Base, SessionLocal, engine
-    from app.db.seed import check_missing_templates, seed_prompt_templates
-
-    Base.metadata.create_all(bind=engine)
-
-    db = SessionLocal()
-    try:
-        seed_prompt_templates(db)
-        missing = check_missing_templates(db)
-        if missing:
-            logging.getLogger(__name__).warning(
-                "Required prompt templates still missing after seed: %s — "
-                "run `python -m app.db.seed` to fix.",
-                missing,
-            )
-    finally:
-        db.close()
-
     from app.config import get_settings
     _settings = get_settings()
+
+    if _settings.run_schema_bootstrap:
+        from app.database import Base, SessionLocal, engine
+        from app.db.seed import check_missing_templates, seed_prompt_templates
+
+        Base.metadata.create_all(bind=engine)
+
+        db = SessionLocal()
+        try:
+            seed_prompt_templates(db)
+            missing = check_missing_templates(db)
+            if missing:
+                logging.getLogger(__name__).warning(
+                    "Required prompt templates still missing after seed: %s — "
+                    "run `python -m app.db.seed` to fix.",
+                    missing,
+                )
+        finally:
+            db.close()
+
     if "localhost" in _settings.app_base_url:
         logging.getLogger(__name__).warning(
             "APP_BASE_URL is set to %r which contains 'localhost'. "

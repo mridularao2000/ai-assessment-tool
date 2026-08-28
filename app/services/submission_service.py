@@ -99,6 +99,9 @@ class SubmissionService:
         if not token_auth.verify_submission_token(assessment_id, token):
             raise InvalidTokenError(f"Invalid token for assessment {assessment_id!r}.")
 
+        # Each curriculum_upload has its own token pool (None = standalone).
+        upload_id = assessment.curriculum.upload_id
+
         is_late = False
         if assessment.status == AssessmentStatus.expired:
             now = utcnow()
@@ -107,7 +110,7 @@ class SubmissionService:
                     f"Assessment {assessment_id!r} expired in a previous "
                     "calendar month — no longer late-eligible."
                 )
-            if self.late_token_service.get_balance() <= 0:
+            if self.late_token_service.get_balance(upload_id) <= 0:
                 raise InvalidStateError(
                     f"Assessment {assessment_id!r} has expired and no "
                     "late-submission tokens are available."
@@ -152,7 +155,7 @@ class SubmissionService:
         self.db.flush()  # populate submission.id before status transition
 
         if is_late:
-            self.late_token_service.spend(assessment_id)
+            self.late_token_service.spend(assessment_id, upload_id)
             assessment.status = AssessmentStatus.late_submitted
         else:
             assessment.status = AssessmentStatus.submitted
