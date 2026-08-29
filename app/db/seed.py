@@ -419,6 +419,11 @@ REQUIRED_SLUGS: Final[frozenset[str]] = frozenset({
     "retest_generation",
     "grading",
     "reschedule_classification",
+    # Midterms are the highest-stakes entries in a curriculum upload (100
+    # marks each, including the capstone) — without these, generation or
+    # grading fails outright for every one of them, with no other signal.
+    "midterm_generation",
+    "midterm_grading",
 })
 
 

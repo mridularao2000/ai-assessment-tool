@@ -36,6 +36,8 @@ from sqlalchemy.pool import StaticPool
 from app.database import Base, get_db
 from app.dependencies import (
     get_assessment_service,
+    get_curriculum_service,
+    get_curriculum_upload_service,
     get_email_service,
     get_grading_service,
     get_reschedule_service,
@@ -66,6 +68,8 @@ from app.models.grade import Grade
 from app.models.prompt_template import PromptTemplate
 from app.models.submission import Submission, SubmissionType
 from app.services.assessment_service import AssessmentService
+from app.services.curriculum_service import CurriculumService
+from app.services.curriculum_upload_service import CurriculumUploadService
 from app.services.email_service import EmailService
 from app.services.grading_service import GradingService
 from app.services.reschedule_service import RescheduleService
@@ -481,12 +485,35 @@ def _make_client(fake_scheduler_instance, fake_llm_instance):
         # list wasn't updated for it.
         return EmailService(db, RecordingEmailAdapter())
 
+    def override_get_curriculum_service(
+        db: Annotated[Session, Depends(get_db)],
+        svc: Annotated[SchedulerService, Depends(get_scheduler_service)],
+    ) -> CurriculumService:
+        # Was missing from this override list entirely — POST /curriculum/
+        # was only ever exercised by constructing CurriculumService(fake)
+        # directly at the service layer, never through this client fixture,
+        # which is why the gap went unnoticed. The first route-level test
+        # for it (or any future one) would otherwise silently hit the real
+        # Anthropic API via app.dependencies._llm.
+        return CurriculumService(db, fake_llm_instance, svc)
+
+    def override_get_curriculum_upload_service(
+        db: Annotated[Session, Depends(get_db)],
+        svc: Annotated[SchedulerService, Depends(get_scheduler_service)],
+    ) -> CurriculumUploadService:
+        # Same gap as above, for POST /curriculum-uploads/ — real _email
+        # (Resend/Gmail SMTP) instead of a fake, undetected because nothing
+        # exercised this route through the client fixture yet either.
+        return CurriculumUploadService(db, RecordingEmailAdapter(), svc)
+
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_scheduler_service] = override_get_scheduler_service
     app.dependency_overrides[get_assessment_service] = override_get_assessment_service
     app.dependency_overrides[get_grading_service] = override_get_grading_service
     app.dependency_overrides[get_reschedule_service] = override_get_reschedule_service
     app.dependency_overrides[get_email_service] = override_get_email_service
+    app.dependency_overrides[get_curriculum_service] = override_get_curriculum_service
+    app.dependency_overrides[get_curriculum_upload_service] = override_get_curriculum_upload_service
 
     return TestClient(app)
 
@@ -522,6 +549,7 @@ def seed_prompt_templates(db: Session) -> None:
     """Insert one active PromptTemplate for each required slug."""
     for slug in (
         "assessment_generation",
+        "curriculum_analysis",
         "retest_generation",
         "midterm_generation",
         "midterm_retest_generation",

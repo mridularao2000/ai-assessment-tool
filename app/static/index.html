@@ -675,7 +675,7 @@ function clearResult(id) {
 
 function showResult(id, data, isError) {
   const el = document.getElementById(id);
-  el.textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+  el.textContent = isError ? formatError(data) : (typeof data === 'string' ? data : JSON.stringify(data, null, 2));
   el.className = 'response-box ' + (isError ? 'response-err' : 'response-ok');
   el.style.display = 'block';
   el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -704,6 +704,26 @@ async function api(url, opts = {}) {
   } catch (err) {
     return { ok: false, status: 0, data: { error: String(err) } };
   }
+}
+
+function formatError(data) {
+  // FastAPI's own errors are {"detail": "..."} (a plain readable message)
+  // or, for request-validation failures, {"detail": [{loc, msg, type}, ...]}.
+  // Showing either as a human sentence instead of a raw JSON dump is the
+  // single biggest gap between this being a developer API tester and
+  // something anyone can actually use without knowing the response shape.
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    if (typeof data.detail === 'string') return data.detail;
+    if (Array.isArray(data.detail)) {
+      return data.detail
+        .map(d => {
+          const field = Array.isArray(d.loc) ? d.loc.slice(1).join('.') : '';
+          return field ? `${field}: ${d.msg}` : d.msg;
+        })
+        .join('\n');
+    }
+  }
+  return typeof data === 'string' ? data : JSON.stringify(data, null, 2);
 }
 
 function escapeHtml(s) {
@@ -894,10 +914,33 @@ document.getElementById('rescheduleForm').addEventListener('submit', async (e) =
 });
 
 // ── Curriculum Upload: shared helper ─────────────────────────────────────────
+// Remembered across page reloads (localStorage) — without this, coming back
+// to the tool later meant re-finding and re-pasting the same upload ID
+// every single time before anything else here was usable.
+
+const UPLOAD_ID_STORAGE_KEY = 'cu_upload_id';
 
 function getUploadId() {
   return document.getElementById('cu_upload_id').value.trim();
 }
+
+function setUploadId(id) {
+  const el = document.getElementById('cu_upload_id');
+  el.value = id;
+  try { localStorage.setItem(UPLOAD_ID_STORAGE_KEY, id); } catch { /* private mode etc. */ }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  let remembered = '';
+  try { remembered = localStorage.getItem(UPLOAD_ID_STORAGE_KEY) || ''; } catch { /* ignore */ }
+  if (remembered) {
+    document.getElementById('cu_upload_id').value = remembered;
+    viewEntries(); // show current state immediately, no extra click needed
+  }
+  document.getElementById('cu_upload_id').addEventListener('input', (e) => {
+    try { localStorage.setItem(UPLOAD_ID_STORAGE_KEY, e.target.value.trim()); } catch { /* ignore */ }
+  });
+});
 
 // ── C1. Upload Curriculum File ───────────────────────────────────────────────
 
@@ -921,7 +964,7 @@ document.getElementById('uploadCurriculumForm').addEventListener('submit', async
   const { ok, data } = await api('/api/v1/curriculum-uploads/', { method: 'POST', body: fd });
   showResult('uploadCurriculumResult', data, !ok);
   if (ok && data.upload_id) {
-    document.getElementById('cu_upload_id').value = data.upload_id;
+    setUploadId(data.upload_id);
   }
   setLoading(btn, false);
 });
@@ -946,7 +989,7 @@ async function viewEntries() {
 
   if (!ok) {
     box.innerHTML = '<div class="response-box response-err" style="display:block">' +
-      escapeHtml(JSON.stringify(data, null, 2)) + '</div>';
+      escapeHtml(formatError(data)) + '</div>';
     return;
   }
 
@@ -1034,7 +1077,7 @@ async function triggerLateSend(entryId) {
 
   resultBox.textContent = ok
     ? 'Exam sent — check your email for the link to submit. This uses up one late-submission token once you actually submit.'
-    : (typeof data === 'string' ? data : JSON.stringify(data, null, 2));
+    : formatError(data);
   resultBox.className = 'response-box small mt-1 ' + (ok ? 'response-ok' : 'response-err');
   resultBox.style.display = 'block';
 }
@@ -1057,6 +1100,15 @@ function renderPendingField(entryId, slot) {
       <label class="form-label" for="${fieldId}">${escapeHtml(slot.label)}</label>
       <input type="text" class="form-control font-monospace" id="${fieldId}" value="${escapeHtml(value)}">
     </div>`;
+}
+
+function refreshEntriesIfLoaded() {
+  // Only re-fetch if the table has actually been shown at least once —
+  // otherwise Add/Update Entry would trigger a pointless request for a
+  // section the user hasn't opened yet.
+  if (document.getElementById('viewEntriesResult').querySelector('table')) {
+    viewEntries();
+  }
 }
 
 function toggleProjectSubmit(entryId) {
@@ -1085,7 +1137,7 @@ async function submitProjectResources(entryId) {
   );
   setLoading(btn, false);
 
-  resultBox.textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+  resultBox.textContent = ok ? JSON.stringify(data, null, 2) : formatError(data);
   resultBox.className = 'response-box ' + (ok ? 'response-ok' : 'response-err');
   resultBox.style.display = 'block';
 
@@ -1153,6 +1205,7 @@ document.getElementById('addEntryForm').addEventListener('submit', async (e) => 
     body:    JSON.stringify({ entry }),
   });
   showResult('addEntryResult', data, !ok);
+  if (ok) refreshEntriesIfLoaded();
   setLoading(btn, false);
 });
 
@@ -1199,6 +1252,7 @@ document.getElementById('updateEntryForm').addEventListener('submit', async (e) 
     body:    JSON.stringify({ updates }),
   });
   showResult('updateEntryResult', data, !ok);
+  if (ok) refreshEntriesIfLoaded();
   setLoading(btn, false);
 });
 
