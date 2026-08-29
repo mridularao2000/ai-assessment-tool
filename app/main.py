@@ -34,9 +34,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     if _settings.run_schema_bootstrap:
         from app.database import Base, SessionLocal, engine
+        from app.db.schema_sync import sync_schema
         from app.db.seed import check_missing_templates, seed_prompt_templates
 
         Base.metadata.create_all(bind=engine)
+        applied = sync_schema(engine)
+        if applied:
+            logging.getLogger(__name__).warning(
+                "Schema sync added missing columns to existing tables: %s", applied
+            )
 
         db = SessionLocal()
         try:

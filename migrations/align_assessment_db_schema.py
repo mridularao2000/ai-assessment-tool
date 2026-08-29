@@ -1,18 +1,21 @@
-"""One-off schema-alignment migration for the tracked dev DB (assessment.db).
+"""One-off schema-alignment CLI for a specific SQLite file (e.g. a local
+copy of assessment.db, or a Render disk snapshot pulled down for
+inspection).
 
 Why this exists: the app only ever calls Base.metadata.create_all() (see
 app/main.py's lifespan) — that creates missing TABLES but never ALTERs an
-existing table to add new columns. Every model change since the
-curriculum-upload feature was added (Section 3 onward) has silently drifted
-away from assessment.db's on-disk schema as a result. This script brings
-that one file back in line with the current models, in place, without
-touching data (every added column is nullable-or-defaulted, so existing
-rows are never rewritten in an unsafe way).
+existing table to add new columns. As of this script's latest update, app
+startup now also calls app.db.schema_sync.sync_schema() automatically
+(same column list, same idempotent logic) right after create_all(), so a
+running deployment — Render included — self-heals on its next restart
+without anyone needing to run this by hand. This script remains useful for
+inspecting/fixing a DB file directly without spinning up the app (e.g. a
+local dev DB, or a downloaded copy of the production disk).
 
 This project has no Alembic (migrations/versions/ is an empty, untracked
-scaffold — never wired up). This script is intentionally a plain, explicit,
-one-off fix rather than introducing a migration framework for a single-file
-SQLite dev DB.
+scaffold — never wired up). This script is intentionally a plain, explicit
+CLI over the shared column list in app.db.schema_sync rather than a full
+migration framework for a single-file SQLite DB.
 
 Usage:
     .venv/bin/python migrations/align_assessment_db_schema.py [path-to-db]
@@ -27,45 +30,11 @@ import sqlite3
 import sys
 from pathlib import Path
 
+from app.db.schema_sync import PENDING_COLUMNS as ADD_COLUMNS
+
 # ── New tables (created via SQLAlchemy so they exactly match the models —
 # indexes, constraints, column order, everything) ──────────────────────────
 NEW_TABLES = ["curriculum_uploads", "midterm_details"]
-
-# ── Columns missing from existing tables, hand-written to mirror the
-# models exactly (app/models/assessment.py, curriculum.py, grade.py,
-# submission.py) ────────────────────────────────────────────────────────────
-ADD_COLUMNS: dict[str, list[str]] = {
-    "assessments": [
-        "ALTER TABLE assessments ADD COLUMN part1_text TEXT",
-        "ALTER TABLE assessments ADD COLUMN part1_rubric TEXT",
-        "ALTER TABLE assessments ADD COLUMN part2_text TEXT",
-        "ALTER TABLE assessments ADD COLUMN part2_rubric TEXT",
-        "ALTER TABLE assessments ADD COLUMN send_job_claimed_at DATETIME",
-    ],
-    "curricula": [
-        "ALTER TABLE curricula ADD COLUMN entry_type VARCHAR(10)",
-        "ALTER TABLE curricula ADD COLUMN upload_id VARCHAR(36)",
-        "ALTER TABLE curricula ADD COLUMN chapter_label TEXT",
-        "ALTER TABLE curricula ADD COLUMN max_marks FLOAT",
-        "ALTER TABLE curricula ADD COLUMN resources_hold BOOLEAN NOT NULL DEFAULT 0",
-        "ALTER TABLE curricula ADD COLUMN last_hold_reminder_at DATETIME",
-    ],
-    "grades": [
-        "ALTER TABLE grades ADD COLUMN part1_score FLOAT",
-        "ALTER TABLE grades ADD COLUMN part2_score FLOAT",
-        "ALTER TABLE grades ADD COLUMN score_earned FLOAT",
-        "ALTER TABLE grades ADD COLUMN max_marks FLOAT",
-    ],
-    "submissions": [
-        "ALTER TABLE submissions ADD COLUMN part1_text_content TEXT",
-    ],
-    "late_submission_tokens": [
-        "ALTER TABLE late_submission_tokens ADD COLUMN curriculum_upload_id VARCHAR(36)",
-    ],
-    "curriculum_uploads": [
-        "ALTER TABLE curriculum_uploads ADD COLUMN closed_at DATETIME",
-    ],
-}
 
 
 def _existing_columns(cur: sqlite3.Cursor, table: str) -> set[str]:
