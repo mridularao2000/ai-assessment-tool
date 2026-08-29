@@ -26,6 +26,7 @@ from app.models.assessment import Assessment, AssessmentStatus
 from app.models.curriculum import Curriculum, CurriculumEntryType
 from app.models.midterm_detail import MidtermDetail
 from app.services.curriculum_upload_service import CurriculumUploadService
+from app.services.late_token_service import LateTokenService
 from app.services.scheduler_service import SchedulerService
 from tests.conftest import (
     FakeLLM,
@@ -285,6 +286,11 @@ class TestHoldClearingSchedulesFromToday:
         svc, fake = _scheduler(db)
         service = CurriculumUploadService(db, NoopEmailAdapter(), svc)
         upload = service.ingest(seed_raw, "curriculum_seed.json")
+        # A held midterm's completion_date has already passed by
+        # construction — clearing it is a late recovery, token-gated the
+        # same way a late assessment submission is (see
+        # CurriculumUploadService.check_and_clear_hold).
+        LateTokenService(db).grant_monthly(upload.id)
 
         db.expire_all()
         pm_system = (
@@ -300,7 +306,8 @@ class TestHoldClearingSchedulesFromToday:
         assert refreshed.resources_hold is False
         assert len(refreshed.assessments) == 1
         assessment = refreshed.assessments[0]
-        # window = today(2026-08-26)+1..+3, NOT 2026-08-14(original)+1..+3
+        # window = _pin_today's pinned "today" (2026-08-26)+1..+3, NOT the
+        # original completion_date (2026-08-14)+1..+3.
         assert date(2026, 8, 27) <= assessment.scheduled_at.date() <= date(2026, 8, 29)
 
 
@@ -374,6 +381,7 @@ class TestMidtermContentAssembly:
         svc, _ = _scheduler(db)
         service = CurriculumUploadService(db, NoopEmailAdapter(), svc)
         upload = service.ingest(seed_raw, "curriculum_seed.json")
+        LateTokenService(db).grant_monthly(upload.id)
 
         db.expire_all()
         pm_system = (

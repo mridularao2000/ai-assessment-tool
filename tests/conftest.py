@@ -36,6 +36,7 @@ from sqlalchemy.pool import StaticPool
 from app.database import Base, get_db
 from app.dependencies import (
     get_assessment_service,
+    get_email_service,
     get_grading_service,
     get_reschedule_service,
     get_scheduler_service,
@@ -65,6 +66,7 @@ from app.models.grade import Grade
 from app.models.prompt_template import PromptTemplate
 from app.models.submission import Submission, SubmissionType
 from app.services.assessment_service import AssessmentService
+from app.services.email_service import EmailService
 from app.services.grading_service import GradingService
 from app.services.reschedule_service import RescheduleService
 from app.services.scheduler_service import SchedulerService
@@ -466,11 +468,22 @@ def _make_client(fake_scheduler_instance, fake_llm_instance):
     ) -> RescheduleService:
         return RescheduleService(db, fake_llm_instance, svc)
 
+    def override_get_email_service(
+        db: Annotated[Session, Depends(get_db)],
+    ) -> EmailService:
+        # Every route this client can reach must be safe from real Resend
+        # calls, same reasoning as the LLM/scheduler fakes above — a route
+        # added later that starts depending on get_email_service must not
+        # silently start hitting the network just because this override
+        # list wasn't updated for it.
+        return EmailService(db, RecordingEmailAdapter())
+
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_scheduler_service] = override_get_scheduler_service
     app.dependency_overrides[get_assessment_service] = override_get_assessment_service
     app.dependency_overrides[get_grading_service] = override_get_grading_service
     app.dependency_overrides[get_reschedule_service] = override_get_reschedule_service
+    app.dependency_overrides[get_email_service] = override_get_email_service
 
     return TestClient(app)
 

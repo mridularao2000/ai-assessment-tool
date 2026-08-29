@@ -35,6 +35,19 @@ def display_status(db: Session, curriculum: Curriculum) -> str:
     latest attempt's Assessment.status instead.
     """
     if curriculum.resources_hold:
+        # A held midterm's completion_date has already passed by
+        # construction (that's what set resources_hold — see
+        # CurriculumUploadService._create_entry). Same token-gated
+        # monthly window as an expired assessment: recoverable with a
+        # token within completion_date's calendar month (see
+        # CurriculumUploadService.check_and_clear_hold), permanently
+        # unscoreable once that month has passed — reusing MISSED_NO_SCORE
+        # verbatim rather than a distinct label, since it's the exact same
+        # terminal state, not just a similar one.
+        now = datetime.utcnow()
+        due = curriculum.target_completion_date
+        if (due.year, due.month) != (now.year, now.month):
+            return MISSED_NO_SCORE
         return HELD
 
     assessments = sorted(curriculum.assessments, key=lambda a: a.attempt_number)
@@ -131,7 +144,11 @@ def _row_for(db: Session, curriculum: Curriculum) -> Optional[TranscriptEntryRow
         return None
 
     attempts = sorted(curriculum.assessments, key=lambda a: a.attempt_number)
-    final = attempts[-1]
+    # A permanently-missed HELD midterm (see display_status) never got an
+    # Assessment row at all — the window closed before it ever opened, so
+    # there's nothing to point at. final stays None for that case; every
+    # branch below that needs it is already guarded on status/attempts.
+    final = attempts[-1] if attempts else None
 
     points: Optional[float] = None
     retake_note: Optional[str] = None
@@ -152,7 +169,7 @@ def _row_for(db: Session, curriculum: Curriculum) -> Optional[TranscriptEntryRow
             is not None
         )
 
-    if final.attempt_number > 1:
+    if final is not None and final.attempt_number > 1:
         first = attempts[0]
         if first.submission is not None and first.submission.grade is not None:
             prior_points = first.submission.grade.score_earned

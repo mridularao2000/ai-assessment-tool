@@ -21,6 +21,7 @@ from app.models.midterm_detail import MidtermDetail
 from app.models.resource import Resource, ResourceType
 from app.services.assessment_service import calculate_scheduled_at, build_assessment_dates
 from app.services.email_service import EmailService
+from app.services.late_token_service import LateTokenService
 from app.services.scheduler_service import SchedulerService
 from app.utils.token_auth import generate_submission_token
 
@@ -257,6 +258,13 @@ class CurriculumUploadService:
         for c in created:
             self.db.refresh(c)
         self.db.refresh(upload)
+
+        # Fund this upload's own late-submission-token pool immediately —
+        # otherwise it sits at 0 until the next monthly cron tick (which
+        # only tops up pools that already existed when it last ran; see
+        # grant_late_tokens_job.py), silently blocking every Missed —
+        # Late-Eligible entry from actually being recoverable.
+        LateTokenService(self.db).grant_monthly(upload.id)
 
         # Non-fatal side effects below — the upload itself is already
         # committed and durable regardless of what happens here.
@@ -656,23 +664,54 @@ class CurriculumUploadService:
         return curriculum
 
     def check_and_clear_hold(self, curriculum: Curriculum) -> bool:
-        """Clear resources_hold if every pending slot is now filled, and
+        """Clear resources_hold if every pending slot is now filled AND
+        the late-submission grace window still allows it, then
         immediately schedule its exam window from today (not the original
         completion_date), per spec.
 
-        Returns True if this call flipped it off. Shared by
+        A held midterm's completion_date has, by construction, already
+        passed the moment resources_hold is set (see _create_entry /
+        recheck_pending_midterms_job) — so clearing it is always a late
+        recovery, gated the same way SubmissionService.create() gates a
+        late submission for an expired assessment:
+          - target_completion_date's calendar month == today's month:
+            clearing spends one late-submission token from this entry's
+            pool (upload-scoped, same pool late assessment submissions
+            use). No token available -> stays held (caller/UI sees
+            resources_hold still True; a manual re-check or a future
+            grant can succeed later, same month).
+          - a LATER calendar month: permanently unscoreable, no token can
+            recover it — see transcript_service.display_status, which
+            classifies this exact state as MISSED_NO_SCORE, "same
+            terminal state as a permanently-missed assessment" by
+            explicit design, not a distinct label.
+
+        Returns True if this call flipped resources_hold off. Shared by
         fill_pending_resources() and the daily recheck job so a manual
         PATCH resolves immediately without waiting for the next cron tick.
         """
         detail = curriculum.midterm_detail
         if detail is None or not curriculum.resources_hold:
             return False
-        if all(v is not None for v in detail.pending_completion_slots.values()):
-            curriculum.resources_hold = False
-            self.db.commit()
-            self._schedule_entry_assessment(curriculum, date.today())
-            return True
-        return False
+        if not all(v is not None for v in detail.pending_completion_slots.values()):
+            return False
+
+        today = date.today()
+        due = curriculum.target_completion_date
+        if (due.year, due.month) != (today.year, today.month):
+            # Permanently past its grace month — see display_status().
+            return False
+
+        late_tokens = LateTokenService(self.db)
+        if late_tokens.get_balance(curriculum.upload_id) <= 0:
+            return False
+
+        curriculum.resources_hold = False
+        self.db.commit()
+        assessment = self._schedule_entry_assessment(curriculum, today)
+        late_tokens.spend(assessment.id, curriculum.upload_id)
+        self.db.commit()
+        return True
 
     def send_hold_reminder(self, curriculum: Curriculum, email_service: EmailService) -> None:
         """Send (or re-send) the "resources still missing" reminder. Non-fatal."""

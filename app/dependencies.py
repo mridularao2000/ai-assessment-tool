@@ -22,6 +22,7 @@ Per-request dependencies (instantiated per request via Depends):
   get_scheduler_service — SchedulerService
   get_curriculum_service
   get_assessment_service
+  get_email_service
   get_submission_service
   get_grading_service
   get_reschedule_service
@@ -59,6 +60,7 @@ from app.interfaces.llm import (
 from app.services.assessment_service import AssessmentService
 from app.services.curriculum_service import CurriculumService
 from app.services.curriculum_upload_service import CurriculumUploadService
+from app.services.email_service import EmailService
 from app.services.grading_service import GradingService
 from app.services.late_token_service import LateTokenService
 from app.services.reschedule_service import RescheduleService
@@ -175,6 +177,12 @@ def get_assessment_service(
     db: Annotated[Session, Depends(get_db)],
 ) -> AssessmentService:
     return AssessmentService(db, _llm)
+
+
+def get_email_service(
+    db: Annotated[Session, Depends(get_db)],
+) -> EmailService:
+    return EmailService(db, _email)
 
 
 def get_late_token_service(

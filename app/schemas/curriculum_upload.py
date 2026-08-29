@@ -24,6 +24,10 @@ class CurriculumEntrySummary(BaseModel):
     completion_date: date
     max_marks: float
     resources_hold: bool
+    # Live classification from transcript_service.display_status — e.g.
+    # "Missed — Late-Eligible (2 left)". The UI uses the "Missed —
+    # Late-Eligible" prefix to decide when to show the late-send trigger.
+    status: str
     # Populated only for a midterm-type entry currently on hold — the
     # pending_completion slots the "Submit completed project" UI section
     # needs to render. None for every other entry (not just False/empty),
@@ -103,3 +107,9 @@ class UpdateEntryRequest(BaseModel):
 class CloseUploadResponse(BaseModel):
     upload_id: str
     closed_at: datetime
+
+
+class LateSendResponse(BaseModel):
+    curriculum_id: str
+    assessment_id: str
+    sent: bool = True

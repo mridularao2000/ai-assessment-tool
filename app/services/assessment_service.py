@@ -15,10 +15,13 @@ from app.interfaces.llm import (
     MidtermRetestGenerationRequest,
     RetestGenerationRequest,
 )
+from app.models._utils import utcnow
 from app.models.assessment import Assessment, AssessmentStatus
 from app.models.curriculum import Curriculum, CurriculumEntryType, CurriculumStatus
 from app.models.grade import Grade
 from app.models.prompt_template import PromptTemplate
+from app.services.email_service import EmailService
+from app.services.late_token_service import LateTokenService
 from app.utils.token_auth import generate_submission_token, verify_submission_token
 
 
@@ -400,6 +403,77 @@ class AssessmentService:
         assessment.duration_minutes = result.duration_minutes
         assessment.generation_prompt_id = prompt_template.id
         self.db.flush()
+
+    def trigger_late_send(self, curriculum_id: str, email_service: EmailService) -> Assessment:
+        """UI-facing entry point for a Missed — Late-Eligible entry: the
+        student-facing button/action equivalent of what an on-time exam
+        gets automatically from send_assessment_job, just entered from a
+        different starting point (the window already closed).
+
+        Generates content now if it hasn't been generated yet — true for
+        an entry whose window closed before it was ever scheduled (see
+        CurriculumUploadService.schedule_ready_entries /
+        _create_retroactive_expired_assessment) — then (re)sends the
+        assessment email via the exact same EmailService.send_assessment_email
+        used for an on-time send. That email is the only place the
+        submission_token is ever delivered; this method never returns it,
+        so there's no new way to read a token without owning the inbox it
+        was sent to.
+
+        Does NOT spend a late-submission token itself — spending stays at
+        actual submission time in SubmissionService.create(), exactly as
+        for a normally-expired assessment recovered from the original
+        email. This only checks a token is available, so a click doesn't
+        burn an LLM call + email send for a submission the student can't
+        actually make.
+
+        Raises:
+            NotFoundError: curriculum_id doesn't exist, or has no
+                            Assessment yet (nothing scheduled at all).
+            InvalidStateError: not currently expired-this-month (already
+                                graded, still within its normal window,
+                                on hold, or missed in an earlier calendar
+                                month), or no late-submission tokens remain.
+            LLMValidationError: if content generation fails after all retries.
+        """
+        curriculum = self.db.get(Curriculum, curriculum_id)
+        if curriculum is None:
+            raise NotFoundError(f"Curriculum {curriculum_id!r} not found.")
+
+        assessments = sorted(curriculum.assessments, key=lambda a: a.attempt_number)
+        if not assessments:
+            raise NotFoundError(
+                f"Curriculum {curriculum_id!r} has no assessment scheduled yet."
+            )
+        assessment = assessments[-1]
+
+        if assessment.status != AssessmentStatus.expired:
+            raise InvalidStateError(
+                f"Assessment {assessment.id!r} is not expired "
+                f"(current status: {assessment.status.value!r}) — nothing to late-send."
+            )
+        now = utcnow()
+        if (assessment.due_date.year, assessment.due_date.month) != (now.year, now.month):
+            raise InvalidStateError(
+                f"Assessment {assessment.id!r} expired in a previous calendar "
+                "month — no longer late-eligible."
+            )
+        if LateTokenService(self.db).get_balance(curriculum.upload_id) <= 0:
+            raise InvalidStateError(
+                f"No late-submission tokens available for curriculum {curriculum_id!r}."
+            )
+
+        is_midterm = curriculum.entry_type == CurriculumEntryType.midterm
+        has_content = assessment.part1_text is not None if is_midterm else assessment.assessment_text is not None
+        if not has_content:
+            if is_midterm:
+                self.generate_midterm_content(assessment)
+            else:
+                self.generate_assessment_content(assessment)
+            self.db.commit()
+
+        email_service.send_assessment_email(assessment.id)
+        return assessment
 
     def get_by_id_and_token(self, assessment_id: str, token: str) -> Assessment:
         """Load an Assessment by ID and verify its submission token.

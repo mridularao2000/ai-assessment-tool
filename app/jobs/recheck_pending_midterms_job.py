@@ -10,6 +10,7 @@ from app.models.curriculum_upload import CurriculumUpload
 from app.services.curriculum_upload_service import CurriculumUploadService
 from app.services.email_service import EmailService
 from app.services.scheduler_service import SchedulerService
+from app.services.transcript_service import MISSED_NO_SCORE, display_status
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,13 @@ def recheck_pending_midterms_job() -> None:
         )
         for curriculum in held:
             if service.check_and_clear_hold(curriculum):
+                continue
+            if display_status(db, curriculum) == MISSED_NO_SCORE:
+                # Permanently past its grace month — no token can recover
+                # it (see check_and_clear_hold), so there's nothing left
+                # to remind about. Leave resources_hold as-is; the
+                # transcript/GPA already read this state correctly via
+                # display_status without needing it flipped.
                 continue
             due = (
                 curriculum.last_hold_reminder_at is None

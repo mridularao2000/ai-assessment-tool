@@ -24,8 +24,10 @@ from app.exceptions import CurriculumUploadValidationError, InvalidStateError, N
 from app.models.assessment import Assessment, AssessmentStatus
 from app.models.curriculum import Curriculum, CurriculumEntryType
 from app.models.curriculum_upload import CurriculumUpload
+from app.models.late_submission_token import LateSubmissionToken
 from app.models.midterm_detail import MidtermDetail
 from app.services.curriculum_upload_service import CurriculumUploadService
+from app.services.late_token_service import LateTokenService
 from app.services.scheduler_service import SchedulerService
 from tests.conftest import FakeScheduler, NoopEmailAdapter, RecordingEmailAdapter
 
@@ -340,6 +342,11 @@ class TestPendingResourcesPatch:
     def test_fill_all_slots_clears_hold(self, db, seed_raw):
         service = CurriculumUploadService(db, RecordingEmailAdapter(), _scheduler(db))
         upload = service.ingest(seed_raw, "curriculum_seed.json")
+        # A held midterm's completion_date has already passed by
+        # construction, so clearing it now is a late recovery — same
+        # token-gated monthly window as a late assessment submission (see
+        # CurriculumUploadService.check_and_clear_hold).
+        LateTokenService(db).grant_monthly(upload.id)
 
         db.expire_all()
         pm_system = (
@@ -359,6 +366,36 @@ class TestPendingResourcesPatch:
             {slugs[1]: "https://github.com/x/pm-system#readme", slugs[2]: "audit passed"},
         )
         assert updated.resources_hold is False
+
+    def test_fill_all_slots_without_a_token_stays_held(self, db, seed_raw):
+        """Same fill, but this upload's pool is exhausted — the hold must
+        NOT clear, since resources_hold is only set once completion_date
+        has already passed (a held midterm is, by construction, always a
+        late recovery). ingest() now auto-grants 2 tokens to a fresh
+        upload's pool (see CurriculumUploadService.ingest), so to exercise
+        the zero-balance case we drain the pool it was just given, standing
+        in for both tokens already having been spent elsewhere this month."""
+        service = CurriculumUploadService(db, RecordingEmailAdapter(), _scheduler(db))
+        upload = service.ingest(seed_raw, "curriculum_seed.json")
+        db.query(LateSubmissionToken).filter(
+            LateSubmissionToken.curriculum_upload_id == upload.id
+        ).delete()
+        db.commit()
+
+        db.expire_all()
+        pm_system = (
+            db.query(Curriculum)
+            .filter(Curriculum.upload_id == upload.id, Curriculum.topic.like("PM System%"))
+            .first()
+        )
+        slugs = list(pm_system.midterm_detail.pending_completion_slots)
+
+        updated = service.fill_pending_resources(
+            pm_system.id,
+            {slugs[0]: "a", slugs[1]: "b", slugs[2]: "c"},
+        )
+        assert updated.resources_hold is True
+        assert updated.assessments == []  # window never opened
 
     def test_unknown_slot_raises(self, db, seed_raw):
         service = CurriculumUploadService(db, RecordingEmailAdapter(), _scheduler(db))
@@ -381,6 +418,7 @@ class TestPendingResourcesPatch:
     def test_patch_endpoint_clears_hold(self, client, db, seed_raw):
         service = CurriculumUploadService(db, RecordingEmailAdapter(), _scheduler(db))
         upload = service.ingest(seed_raw, "curriculum_seed.json")
+        LateTokenService(db).grant_monthly(upload.id)
 
         db.expire_all()
         pm_system = (
@@ -408,6 +446,7 @@ class TestDailyRecheckJob:
 
         service = CurriculumUploadService(db, RecordingEmailAdapter(), _scheduler(db))
         upload = service.ingest(seed_raw, "curriculum_seed.json")
+        LateTokenService(db).grant_monthly(upload.id)
 
         db.expire_all()
         pm_system = (

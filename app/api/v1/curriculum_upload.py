@@ -5,7 +5,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
-from app.dependencies import get_curriculum_upload_service
+from app.dependencies import get_assessment_service, get_curriculum_upload_service, get_email_service
 from app.exceptions import CurriculumUploadValidationError, InvalidStateError, NotFoundError
 from app.models.curriculum import Curriculum
 from app.schemas.curriculum_upload import (
@@ -15,6 +15,7 @@ from app.schemas.curriculum_upload import (
     CurriculumUploadDetailResponse,
     CurriculumUploadResponse,
     GPAResponse,
+    LateSendResponse,
     PendingCompletionSlot,
     PendingResourcesResponse,
     PendingResourcesUpdate,
@@ -23,9 +24,11 @@ from app.schemas.curriculum_upload import (
     TranscriptRowResponse,
     UpdateEntryRequest,
 )
+from app.services.assessment_service import AssessmentService
 from app.services.curriculum_upload_service import CurriculumUploadService
+from app.services.email_service import EmailService
 from app.services.gpa_service import compute_gpa
-from app.services.transcript_service import compute_transcript
+from app.services.transcript_service import compute_transcript, display_status
 
 router = APIRouter()
 
@@ -89,6 +92,7 @@ def get_curriculum_upload(
                 completion_date=e.target_completion_date,
                 max_marks=e.max_marks or 0.0,
                 resources_hold=e.resources_hold,
+                status=display_status(curriculum_upload_svc.db, e),
                 pending_completion=_pending_completion_list(e),
             )
             for e in upload.entries
@@ -175,6 +179,7 @@ def add_entry(
         completion_date=curriculum.target_completion_date,
         max_marks=curriculum.max_marks or 0.0,
         resources_hold=curriculum.resources_hold,
+        status=display_status(curriculum_upload_svc.db, curriculum),
         pending_completion=_pending_completion_list(curriculum),
     )
 
@@ -200,6 +205,7 @@ def update_entry(
         completion_date=curriculum.target_completion_date,
         max_marks=curriculum.max_marks or 0.0,
         resources_hold=curriculum.resources_hold,
+        status=display_status(curriculum_upload_svc.db, curriculum),
         pending_completion=_pending_completion_list(curriculum),
     )
 
@@ -220,6 +226,31 @@ def close_upload(
         raise HTTPException(status_code=422, detail=str(exc))
 
     return CloseUploadResponse(upload_id=upload.id, closed_at=upload.closed_at)
+
+
+@router.post(
+    "/entries/{curriculum_id}/late-send",
+    response_model=LateSendResponse,
+)
+def trigger_late_send(
+    curriculum_id: str,
+    assessment_svc: Annotated[AssessmentService, Depends(get_assessment_service)],
+    email_svc: Annotated[EmailService, Depends(get_email_service)],
+) -> LateSendResponse:
+    """UI-facing trigger for a 'Missed — Late-Eligible' entry: generates
+    exam content if it hasn't been generated yet, and (re)sends the exam
+    email — the same generation/send path an on-time exam gets
+    automatically, just entered late. Does not spend a token itself or
+    return one; the student submits normally once the email arrives,
+    which is where the token actually gets spent."""
+    try:
+        assessment = assessment_svc.trigger_late_send(curriculum_id, email_svc)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except InvalidStateError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    return LateSendResponse(curriculum_id=curriculum_id, assessment_id=assessment.id)
 
 
 @router.patch(

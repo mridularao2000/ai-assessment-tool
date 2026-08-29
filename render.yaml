@@ -40,7 +40,7 @@ services:
       # Wrong value → broken links in every email.
       # Find it at: Render dashboard → your service → Settings → URL
       - key: APP_BASE_URL
-        value: https://REPLACE-WITH-YOUR-RENDER-URL.onrender.com
+        value: https://ai-assessment-cne7.onrender.com/
 
       - key: USER_EMAIL
         sync: false          # Email address that receives all assessments and results.
