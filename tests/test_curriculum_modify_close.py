@@ -313,25 +313,31 @@ class TestCloseCurriculum:
             except InvalidStateError:
                 pass
 
-            # ── The recurring biweekly job (a real, still-running
-            # recurring job -- unrelated to whether THIS upload is closed)
-            # must skip this closed upload's content entirely from now on. ──
+            # ── The recurring daily job's periodic-transcript check (a
+            # real, still-running recurring job -- unrelated to whether
+            # THIS upload is closed) must skip this closed upload's content
+            # entirely from now on. ──
             monkeypatch.setenv(
                 "TRANSCRIPT_SECONDARY_RECIPIENT_EMAIL", "mridula.sureshrao2000@gmail.com"
             )
             get_settings.cache_clear()
-            from app.jobs.send_biweekly_transcript_job import send_biweekly_transcript_job
+            from app.jobs.recheck_pending_midterms_job import recheck_pending_midterms_job
 
             recording.transcript_calls.clear()
             monkeypatch.setattr(
-                "app.jobs.send_biweekly_transcript_job.SessionLocal", TestSessionLocal
+                "app.jobs.recheck_pending_midterms_job.SessionLocal", TestSessionLocal
             )
-            monkeypatch.setattr("app.jobs.send_biweekly_transcript_job._email", recording)
-            send_biweekly_transcript_job()
+            monkeypatch.setattr("app.jobs.recheck_pending_midterms_job._email", recording)
+            monkeypatch.setattr(
+                "app.jobs.recheck_pending_midterms_job.get_scheduler_adapter",
+                lambda: adapter,
+            )
+            recheck_pending_midterms_job()
 
             assert recording.transcript_calls == [], (
-                "the biweekly job fired but must not send anything for a "
-                "closed curriculum, ever, after its final transcript"
+                "the daily job's periodic-transcript check fired but must "
+                "not send anything for a closed curriculum, ever, after "
+                "its final transcript"
             )
         finally:
             adapter._scheduler.shutdown(wait=True)

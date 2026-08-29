@@ -45,6 +45,12 @@ services:
       - key: USER_EMAIL
         sync: false          # Email address that receives all assessments and results.
 
+      - key: TRANSCRIPT_SECONDARY_RECIPIENT_EMAIL
+        sync: false          # Secondary address that gets a periodic transcript snapshot.
+
+      - key: TRANSCRIPT_SECONDARY_INTERVAL_DAYS
+        value: 15
+
       # Render auto-generates a random secret on first deploy.
       - key: SUBMISSION_TOKEN_SECRET
         generateValue: true

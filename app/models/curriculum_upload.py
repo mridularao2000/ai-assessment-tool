@@ -36,6 +36,14 @@ class CurriculumUpload(Base):
     )
     uploaded_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow)
     syllabus_email_sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=None)
+    # Real-clock anchor for the periodic secondary-recipient transcript copy
+    # (see CurriculumUploadService.send_periodic_transcript_if_due). None
+    # until the first send; the gate then compares against this, never
+    # against scheduler registration time — see that method's docstring for
+    # why (restart-anchor drift in the previous interval-trigger design).
+    last_secondary_transcript_sent_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, default=None
+    )
     # Frozen "Course Material" section for the transcript email — captured
     # once, the first time send_syllabus_email() succeeds, and reused
     # unchanged on every subsequent transcript send rather than

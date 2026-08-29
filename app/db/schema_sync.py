@@ -51,6 +51,7 @@ PENDING_COLUMNS: dict[str, list[str]] = {
     ],
     "curriculum_uploads": [
         "ALTER TABLE curriculum_uploads ADD COLUMN closed_at DATETIME",
+        "ALTER TABLE curriculum_uploads ADD COLUMN last_secondary_transcript_sent_at DATETIME",
     ],
 }
 

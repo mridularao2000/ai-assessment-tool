@@ -167,8 +167,9 @@ class EmailService:
         """Send the current transcript for one upload.
 
         recipient_emails is None for the per-event trigger (grade_submission_job)
-        — sends to the primary (user_email) only. The biweekly secondary-copy
-        job (send_biweekly_transcript_job) passes recipient_emails explicitly
+        — sends to the primary (user_email) only. The periodic secondary-copy
+        check (CurriculumUploadService.send_periodic_transcript_if_due, run
+        from recheck_pending_midterms_job) passes recipient_emails explicitly
         so the secondary recipient is never touched by the per-event path.
         """
         content = compute_transcript(self.db, upload_id)

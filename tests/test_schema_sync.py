@@ -132,6 +132,7 @@ class TestSyncSchema:
             "submissions.part1_text_content",
             "late_submission_tokens.curriculum_upload_id",
             "curriculum_uploads.closed_at",
+            "curriculum_uploads.last_secondary_transcript_sent_at",
         }
 
         inspector = inspect(engine)

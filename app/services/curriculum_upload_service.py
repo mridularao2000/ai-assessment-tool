@@ -478,9 +478,9 @@ class CurriculumUploadService:
         upload open and its jobs untouched, rather than silently closing
         without the record being sent — the caller can retry.
 
-        Once closed_at is set, send_biweekly_transcript_job and
-        recheck_pending_midterms_job both skip this upload's entries
-        permanently — see their queries.
+        Once closed_at is set, recheck_pending_midterms_job's periodic
+        transcript check and its hold-recheck loop both skip this upload's
+        entries permanently — see their queries.
 
         Raises:
             NotFoundError: upload_id doesn't exist.
@@ -682,6 +682,46 @@ class CurriculumUploadService:
             self.db.commit()
         except Exception:
             logger.exception("Hold-reminder email failed for curriculum %s", curriculum.id)
+
+    def send_periodic_transcript_if_due(
+        self, upload: CurriculumUpload, email_service: EmailService
+    ) -> bool:
+        """Send the secondary-recipient transcript copy if real elapsed
+        time since the last one (or since upload, if never sent) has
+        reached transcript_secondary_interval_days. Returns True if a send
+        happened.
+
+        Deliberately gated on a persisted timestamp compared against wall
+        clock, not on a scheduler trigger's own cadence: this is called
+        once per tick of recheck_pending_midterms_daily (an absolute-time
+        CronTrigger, hour=6), the same job that already re-checks
+        Midterm resource holds daily. An IntervalTrigger's next_run_time is
+        recomputed relative to *registration* time on every add_job() call,
+        so re-registering it on every process restart (as start() does,
+        with replace_existing=True) silently resets its countdown to zero —
+        this is why the old separate "send_biweekly_transcript" interval
+        job could drift arbitrarily far past its configured interval on a
+        server that restarts often. Deriving "is it due" from a stored
+        timestamp instead of scheduler state is immune to that: any number
+        of restarts between two daily 6am ticks changes nothing here.
+        """
+        settings = get_settings()
+        if not settings.transcript_secondary_recipient_email:
+            return False
+        anchor = upload.last_secondary_transcript_sent_at or upload.uploaded_at
+        interval = timedelta(days=settings.transcript_secondary_interval_days)
+        if utcnow() - anchor < interval:
+            return False
+        try:
+            email_service.send_transcript_email(
+                upload.id, recipient_emails=[settings.transcript_secondary_recipient_email]
+            )
+            upload.last_secondary_transcript_sent_at = utcnow()
+            self.db.commit()
+            return True
+        except Exception:
+            logger.exception("Periodic transcript send failed for upload %s", upload.id)
+            return False
 
     def get_upload(self, upload_id: str) -> CurriculumUpload:
         upload = (

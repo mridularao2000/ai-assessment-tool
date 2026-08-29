@@ -15,12 +15,28 @@ logger = logging.getLogger(__name__)
 
 
 def recheck_pending_midterms_job() -> None:
-    """Scheduler entrypoint: runs daily.
+    """Scheduler entrypoint: runs daily (CronTrigger, absolute calendar
+    time — see apscheduler_adapter._schedule_pending_midterm_recheck).
 
-    For every Midterm currently held for missing resources, clears the hold
-    if all pending_completion slots are now filled; otherwise re-sends the
-    hold reminder only if the throttle interval has elapsed. Re-checking
-    itself always runs daily — only the reminder EMAIL is throttled.
+    Does two independent things on this same daily tick, both driven by
+    real elapsed wall-clock time rather than scheduler-registration time,
+    which is what makes it safe to re-register on every process restart:
+
+    1. For every Midterm currently held for missing resources, clears the
+       hold if all pending_completion slots are now filled; otherwise
+       re-sends the hold reminder only if the throttle interval has
+       elapsed. Re-checking itself always runs daily — only the reminder
+       EMAIL is throttled.
+    2. For every open (non-closed) curriculum upload, sends the periodic
+       secondary-recipient transcript copy if its configured interval has
+       elapsed since the last one. This used to be its own
+       IntervalTrigger-scheduled job (send_biweekly_transcript_job); folded
+       in here because IntervalTrigger recomputes next_run_time relative to
+       *registration* time, so re-registering it on every restart (as
+       start() did, with replace_existing=True) silently reset its
+       countdown — see CurriculumUploadService.send_periodic_transcript_if_due
+       for the fix (a persisted per-upload timestamp compared against wall
+       clock, immune to how many restarts happen between checks).
     """
     logger.info("Starting job: recheck_pending_midterms")
     db = SessionLocal()
@@ -53,5 +69,9 @@ def recheck_pending_midterms_job() -> None:
             )
             if due:
                 service.send_hold_reminder(curriculum, email_service)
+
+        open_uploads = db.query(CurriculumUpload).filter(CurriculumUpload.closed_at.is_(None)).all()
+        for upload in open_uploads:
+            service.send_periodic_transcript_if_due(upload, email_service)
     finally:
         db.close()
