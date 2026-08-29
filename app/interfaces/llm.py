@@ -110,10 +110,18 @@ class MidtermGenerationRequest:
     e.g. the chronologically-first Midterm in an upload — the Midterm's
     own known_now resources as a generic fallback). Part 2 draws on
     own_resources (known_now + any filled pending_completion values,
-    verbatim) and probe_focus. own_resources is what gets web_search/
-    web_fetch grounding — Part 1's pool references material already
-    covered by earlier, already-graded Assessments, not fresh external
-    pages to fetch.
+    EXCEPT the README — see readme_content) and probe_focus. own_resources
+    is what gets web_search/web_fetch grounding — Part 1's pool references
+    material already covered by earlier, already-graded Assessments, not
+    fresh external pages to fetch.
+
+    readme_content mirrors MidtermGradingRequest.readme_content: the
+    free-text project README/design writeup a student supplied when
+    filling this midterm's pending resources, kept OUT of own_resources
+    for the same reason it's kept out of MidtermGradingRequest.resources —
+    it's prose to ground Part 2's questions in, not a URL/label to run
+    through resource_guidance's "web_search then web_fetch this" path.
+    None when no pending-resource slot was identified as the README.
     """
 
     topic: str
@@ -123,6 +131,7 @@ class MidtermGenerationRequest:
     part1_max_marks: float
     part2_max_marks: float
     prompt_template_body: str
+    readme_content: Optional[str] = None
 
 
 @dataclass
@@ -169,7 +178,8 @@ class MidtermRetestGenerationRequest:
     the two-part Midterm shape. own_resources still gets web_search/
     web_fetch grounding on retry, matching generate_midterm's first
     attempt — Part 2 is being regenerated against the same real project,
-    not a fresh one.
+    not a fresh one. readme_content mirrors MidtermGenerationRequest's
+    field of the same name — see its docstring.
     """
 
     topic: str
@@ -183,6 +193,7 @@ class MidtermRetestGenerationRequest:
     weak_areas: list[str]
     attempt_number: int
     prompt_template_body: str
+    readme_content: Optional[str] = None
 
 
 @dataclass

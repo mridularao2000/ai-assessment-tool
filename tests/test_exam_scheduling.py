@@ -431,6 +431,48 @@ class TestMidtermContentAssembly:
         assert "Frontend Architecture" in req.cumulative_pool_content
         assert "Browser Internals" in req.cumulative_pool_content
 
+    def test_readme_labeled_slot_goes_to_readme_content_not_own_resources(self, db):
+        """Regression test for the same resource-mislabeling fix applied to
+        grading (TestMidtermGradingReadmeSeparation) — the generation side
+        had the identical bug: _assemble_midterm_pool() folded EVERY filled
+        pending_completion value into own_resources, which gets treated as
+        a list of fetchable URLs/labels via build_resource_guidance(). A
+        submitted README (free text) would get nonsensical "web_search then
+        web_fetch this" instructions, wasting tool calls/budget."""
+        from app.services.assessment_service import AssessmentService
+        from tests.conftest import make_assessment
+
+        curriculum = make_curriculum(db, entry_type=CurriculumEntryType.midterm)
+        curriculum.max_marks = 100.0
+        db.add(MidtermDetail(
+            curriculum_id=curriculum.id,
+            known_now=["general OOP principles"],
+            pending_completion_labels={
+                "repo_url": "Repo URL",
+                "readme_with_design_decisions": "README with design decisions",
+            },
+            pending_completion_slots={
+                "repo_url": "https://github.com/octocat/Hello-World",
+                "readme_with_design_decisions": "See src/auth/token.py, function verify_token().",
+            },
+            probe_focus="defend the design",
+            part1_max_marks=30.0,
+            part2_max_marks=70.0,
+        ))
+        db.commit()
+        db.refresh(curriculum)
+
+        assessment, _ = make_assessment(db, curriculum, status=AssessmentStatus.active)
+        seed_prompt_templates(db)
+
+        spy = SpyLLM()
+        AssessmentService(db, spy).generate_midterm_content(assessment)
+
+        req = spy.midterm_requests[0]
+        assert req.readme_content == "See src/auth/token.py, function verify_token()."
+        assert req.own_resources == ["general OOP principles", "https://github.com/octocat/Hello-World"]
+        assert not any("verify_token" in r for r in req.own_resources)
+
 
 class TestBuildResourceGuidance:
 

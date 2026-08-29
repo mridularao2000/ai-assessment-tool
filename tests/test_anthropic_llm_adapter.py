@@ -26,6 +26,9 @@ from app.interfaces.llm import (
     GradingRequest,
     LLMUnavailableError,
     LLMValidationError,
+    MidtermGenerationRequest,
+    MidtermGradingRequest,
+    MidtermRetestGenerationRequest,
     RescheduleClassificationRequest,
     RetestGenerationRequest,
 )
@@ -275,6 +278,26 @@ class TestRetryLogic:
         prompt = mock.call_args_list[0][1]["messages"][0]["content"]
         assert "Return ONLY valid JSON" not in prompt
 
+    def test_tool_stop_instruction_appended_on_retry_for_tool_enabled_call(self, adapter):
+        """Regression test for the tool-budget-exhaustion fix: on a retry of
+        a tool-enabled call, the model must be explicitly told to stop
+        calling tools and answer now — not just told to return valid JSON,
+        which alone doesn't address a response that ran out of budget
+        mid-tool-use (see LLMValidationError: "No text block in response
+        content", the real failure this session's dry run hit)."""
+        req = AssessmentGenerationRequest(
+            topic="Python", curriculum_content="notes",
+            prompt_template_body="Generate for {topic} using {curriculum_content}{resource_guidance}",
+            resources=["https://example.com/docs"],
+        )
+        mock = _patch_create(adapter, self._bad_json(), self._good_assessment_json())
+        adapter.generate_assessment(req)
+
+        first_prompt = mock.call_args_list[0][1]["messages"][0]["content"]
+        second_prompt = mock.call_args_list[1][1]["messages"][0]["content"]
+        assert "STOP calling tools" not in first_prompt
+        assert "STOP calling tools" in second_prompt
+
 
 # ── analyze_curriculum ────────────────────────────────────────────────────────
 
@@ -377,10 +400,10 @@ class TestGenerateAssessment:
         assert result.rubric == "Full marks for correct endpoints."
         assert result.duration_minutes == 90
 
-    def test_uses_max_tokens_8192(self, adapter):
+    def test_uses_max_tokens_16000(self, adapter):
         mock = _patch_create(adapter, self._good_json())
         adapter.generate_assessment(self._req())
-        assert mock.call_args[1]["max_tokens"] == 8192
+        assert mock.call_args[1]["max_tokens"] == 16000
 
     def test_missing_assessment_text_key_raises_validation_error(self, adapter):
         bad = json.dumps({"rubric": "some rubric", "duration_minutes": 60})
@@ -473,10 +496,148 @@ class TestGenerateRetest:
         with pytest.raises(LLMValidationError):
             adapter.generate_retest(self._req())
 
-    def test_uses_max_tokens_8192(self, adapter):
+    def test_uses_max_tokens_16000(self, adapter):
         mock = _patch_create(adapter, self._good_json())
         adapter.generate_retest(self._req())
-        assert mock.call_args[1]["max_tokens"] == 8192
+        assert mock.call_args[1]["max_tokens"] == 16000
+
+
+# ── generate_midterm ──────────────────────────────────────────────────────────
+
+
+class TestGenerateMidterm:
+
+    _TEMPLATE = (
+        "Midterm on {topic}\nPool: {cumulative_pool_content}\n"
+        "Resources: {own_resources_list}\n{resource_guidance}\n"
+        "README: {readme_content}\nProbe: {probe_focus}\n"
+        "Marks: {part1_max_marks}/{part2_max_marks}"
+    )
+
+    def _req(self, own_resources=None, readme_content=None) -> MidtermGenerationRequest:
+        return MidtermGenerationRequest(
+            topic="Capstone Project",
+            cumulative_pool_content="Prior chapters on APIs and databases.",
+            own_resources=own_resources if own_resources is not None else ["https://github.com/example/repo"],
+            probe_focus="architecture decisions",
+            part1_max_marks=30.0,
+            part2_max_marks=70.0,
+            prompt_template_body=self._TEMPLATE,
+            readme_content=readme_content,
+        )
+
+    def _good_json(self) -> str:
+        return json.dumps({
+            "part1_text": "Part 1 questions.",
+            "part1_rubric": "Part 1 rubric.",
+            "part2_text": "Part 2 questions.",
+            "part2_rubric": "Part 2 rubric.",
+            "duration_minutes": 120,
+        })
+
+    def test_happy_path_returns_correct_result(self, adapter):
+        _patch_create(adapter, self._good_json())
+        result = adapter.generate_midterm(self._req())
+        assert result.part1_text == "Part 1 questions."
+        assert result.part2_rubric == "Part 2 rubric."
+        assert result.duration_minutes == 120
+
+    def test_uses_max_tokens_16000(self, adapter):
+        mock = _patch_create(adapter, self._good_json())
+        adapter.generate_midterm(self._req())
+        assert mock.call_args[1]["max_tokens"] == 16000
+
+    def test_readme_content_rendered_in_prompt_when_present(self, adapter):
+        mock = _patch_create(adapter, self._good_json())
+        adapter.generate_midterm(self._req(readme_content="See src/auth/token.py for token verification."))
+        prompt = mock.call_args[1]["messages"][0]["content"]
+        assert "See src/auth/token.py for token verification." in prompt
+
+    def test_readme_content_defaults_to_placeholder_when_none(self, adapter):
+        mock = _patch_create(adapter, self._good_json())
+        adapter.generate_midterm(self._req(readme_content=None))
+        prompt = mock.call_args[1]["messages"][0]["content"]
+        assert "No project README/design writeup was submitted" in prompt
+
+    def test_tools_enabled_when_own_resources_present(self, adapter):
+        mock = _patch_create(adapter, self._good_json())
+        adapter.generate_midterm(self._req(own_resources=["https://github.com/example/repo"]))
+        assert mock.call_args[1]["tools"]
+
+    def test_tools_omitted_when_own_resources_empty(self, adapter):
+        mock = _patch_create(adapter, self._good_json())
+        adapter.generate_midterm(self._req(own_resources=[]))
+        assert "tools" not in mock.call_args[1]
+
+    def test_missing_part1_text_key_raises_validation_error(self, adapter):
+        bad = json.dumps({
+            "part1_rubric": "r1", "part2_text": "t2", "part2_rubric": "r2", "duration_minutes": 120,
+        })
+        _patch_create(adapter, bad, bad, bad)
+        with pytest.raises(LLMValidationError, match="schema mismatch"):
+            adapter.generate_midterm(self._req())
+
+
+# ── generate_midterm_retest ───────────────────────────────────────────────────
+
+
+class TestGenerateMidtermRetest:
+
+    _TEMPLATE = (
+        "Midterm retest on {topic}, attempt {attempt_number}\n"
+        "Pool: {cumulative_pool_content}\nResources: {own_resources_list}\n"
+        "{resource_guidance}\nREADME: {readme_content}\nProbe: {probe_focus}\n"
+        "Previous: {previous_part1_score}/{part1_max_marks}, "
+        "{previous_part2_score}/{part2_max_marks}\nWeak: {weak_areas}"
+    )
+
+    def _req(self, readme_content=None) -> MidtermRetestGenerationRequest:
+        return MidtermRetestGenerationRequest(
+            topic="Capstone Project",
+            cumulative_pool_content="Prior chapters.",
+            own_resources=["https://github.com/example/repo"],
+            probe_focus="architecture decisions",
+            part1_max_marks=30.0,
+            part2_max_marks=70.0,
+            previous_part1_score=10.0,
+            previous_part2_score=20.0,
+            weak_areas=["error handling", "test coverage"],
+            attempt_number=2,
+            prompt_template_body=self._TEMPLATE,
+            readme_content=readme_content,
+        )
+
+    def _good_json(self) -> str:
+        return json.dumps({
+            "part1_text": "Retest Part 1.",
+            "part1_rubric": "Retest Part 1 rubric.",
+            "part2_text": "Retest Part 2.",
+            "part2_rubric": "Retest Part 2 rubric.",
+            "duration_minutes": 120,
+        })
+
+    def test_happy_path_returns_correct_result(self, adapter):
+        _patch_create(adapter, self._good_json())
+        result = adapter.generate_midterm_retest(self._req())
+        assert result.part1_text == "Retest Part 1."
+        assert result.part2_text == "Retest Part 2."
+
+    def test_uses_max_tokens_16000(self, adapter):
+        mock = _patch_create(adapter, self._good_json())
+        adapter.generate_midterm_retest(self._req())
+        assert mock.call_args[1]["max_tokens"] == 16000
+
+    def test_readme_content_rendered_in_prompt_when_present(self, adapter):
+        mock = _patch_create(adapter, self._good_json())
+        adapter.generate_midterm_retest(self._req(readme_content="See src/db/repository.py."))
+        prompt = mock.call_args[1]["messages"][0]["content"]
+        assert "See src/db/repository.py." in prompt
+
+    def test_weak_areas_joined_in_prompt(self, adapter):
+        mock = _patch_create(adapter, self._good_json())
+        adapter.generate_midterm_retest(self._req())
+        prompt = mock.call_args[1]["messages"][0]["content"]
+        assert "error handling, test coverage" in prompt
 
 
 # ── grade_submission ──────────────────────────────────────────────────────────
@@ -566,6 +727,83 @@ class TestGradeSubmission:
         _patch_create(adapter, anthropic.RateLimitError("429", response=_RESPONSE_429, body={}))
         with pytest.raises(LLMUnavailableError, match="rate limit"):
             adapter.grade_submission(self._req())
+
+
+# ── grade_midterm_submission ──────────────────────────────────────────────────
+
+
+class TestGradeMidtermSubmission:
+
+    _TEMPLATE = (
+        "Grade midterm:\nP1: {part1_text}\nP1 rubric: {part1_rubric}\n"
+        "P2: {part2_text}\nP2 rubric: {part2_rubric}\n"
+        "Marks: {part1_max_marks}/{part2_max_marks}\n"
+        "P1 answer: {part1_submission_content}\nP2 answer: {part2_submission_content}\n"
+        "{resource_guidance}\nREADME: {readme_content}"
+    )
+
+    def _req(self, resources=None, readme_content=None) -> MidtermGradingRequest:
+        return MidtermGradingRequest(
+            part1_text="Part 1 exam.",
+            part1_rubric="Part 1 rubric.",
+            part2_text="Part 2 exam.",
+            part2_rubric="Part 2 rubric.",
+            part1_max_marks=30.0,
+            part2_max_marks=70.0,
+            part1_submission_content="Part 1 answer.",
+            part2_submission_content="Part 2 answer.",
+            prompt_template_body=self._TEMPLATE,
+            resources=resources if resources is not None else ["https://github.com/example/repo"],
+            readme_content=readme_content,
+        )
+
+    def _good_json(self, part1: float = 27.0, part2: float = 63.0) -> str:
+        return json.dumps({
+            "part1_score": part1,
+            "part2_score": part2,
+            "weak_areas": ["deployment"],
+            "overall_feedback": "Solid overall.",
+        })
+
+    def test_happy_path_returns_correct_result(self, adapter):
+        _patch_create(adapter, self._good_json())
+        result = adapter.grade_midterm_submission(self._req())
+        assert result.part1_score == 27.0
+        assert result.part2_score == 63.0
+        assert result.weak_areas == ["deployment"]
+
+    def test_uses_max_tokens_8000(self, adapter):
+        mock = _patch_create(adapter, self._good_json())
+        adapter.grade_midterm_submission(self._req())
+        assert mock.call_args[1]["max_tokens"] == 8000
+
+    def test_readme_content_rendered_in_prompt_when_present(self, adapter):
+        mock = _patch_create(adapter, self._good_json())
+        adapter.grade_midterm_submission(self._req(readme_content="README claims X is in file Y."))
+        prompt = mock.call_args[1]["messages"][0]["content"]
+        assert "README claims X is in file Y." in prompt
+
+    def test_readme_content_defaults_to_placeholder_when_none(self, adapter):
+        mock = _patch_create(adapter, self._good_json())
+        adapter.grade_midterm_submission(self._req(readme_content=None))
+        prompt = mock.call_args[1]["messages"][0]["content"]
+        assert "No project README/design writeup was submitted" in prompt
+
+    def test_tools_enabled_when_resources_present(self, adapter):
+        mock = _patch_create(adapter, self._good_json())
+        adapter.grade_midterm_submission(self._req(resources=["https://github.com/example/repo"]))
+        assert mock.call_args[1]["tools"]
+
+    def test_tools_omitted_when_resources_empty(self, adapter):
+        mock = _patch_create(adapter, self._good_json())
+        adapter.grade_midterm_submission(self._req(resources=[]))
+        assert "tools" not in mock.call_args[1]
+
+    def test_part2_score_above_max_marks_raises_validation_error(self, adapter):
+        bad = self._good_json(part2=999.0)
+        _patch_create(adapter, bad, bad, bad)
+        with pytest.raises(LLMValidationError, match="schema mismatch"):
+            adapter.grade_midterm_submission(self._req())
 
 
 # ── classify_reschedule_request ───────────────────────────────────────────────

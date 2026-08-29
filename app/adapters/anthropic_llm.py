@@ -44,6 +44,24 @@ WEB_FETCH_TOOL: dict[str, Any] = {
     "max_content_tokens": 20000,
 }
 
+# Retry nudges appended on attempt > 0 (see _retry). The plain one covers
+# ordinary schema-mismatch retries. The tool-aware one is for the 5
+# tool-enabled call sites specifically: a real, observed failure mode is
+# the model spending its whole max_tokens budget on web_search/web_fetch
+# rounds before ever emitting the final JSON (LLMValidationError: "No text
+# block in response content"). Raising max_tokens (below) reduces how
+# often this happens; this nudge is the other half — on a retry, tell the
+# model explicitly to stop searching and answer now rather than repeating
+# the same multi-round search that likely caused the first failure.
+_RETRY_NUDGE_PLAIN = "\n\nReturn ONLY valid JSON with no extra text."
+_RETRY_NUDGE_TOOL_AWARE = (
+    "\n\nReturn ONLY valid JSON with no extra text. If you were still "
+    "gathering information via web_search/web_fetch, STOP calling tools "
+    "now and respond immediately with your best answer using whatever "
+    "you have already found — you are being retried because a previous "
+    "attempt ran out of response budget before producing an answer."
+)
+
 
 class AnthropicLLMAdapter:
     """LLMInterface implementation using Anthropic Claude via the official SDK."""
@@ -145,7 +163,7 @@ class AnthropicLLMAdapter:
                 curriculum_content=req.curriculum_content,
             )
             if attempt > 0:
-                prompt += "\n\nReturn ONLY valid JSON with no extra text."
+                prompt += _RETRY_NUDGE_PLAIN
             raw = self._call(prompt)
             data = self._parse_json(raw)
             try:
@@ -171,9 +189,9 @@ class AnthropicLLMAdapter:
                 resource_guidance=build_resource_guidance(req.resources or []),
             )
             if attempt > 0:
-                prompt += "\n\nReturn ONLY valid JSON with no extra text."
+                prompt += _RETRY_NUDGE_TOOL_AWARE
             tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL] if req.resources else None
-            raw = self._call(prompt, max_tokens=8192, tools=tools)
+            raw = self._call(prompt, max_tokens=16000, tools=tools)
             data = self._parse_json(raw)
             try:
                 return AssessmentGenerationResult(
@@ -199,11 +217,13 @@ class AnthropicLLMAdapter:
                 probe_focus=req.probe_focus or "(not specified)",
                 part1_max_marks=req.part1_max_marks,
                 part2_max_marks=req.part2_max_marks,
+                readme_content=req.readme_content
+                or "(No project README/design writeup was submitted for this midterm.)",
             )
             if attempt > 0:
-                prompt += "\n\nReturn ONLY valid JSON with no extra text."
+                prompt += _RETRY_NUDGE_TOOL_AWARE
             tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL] if req.own_resources else None
-            raw = self._call(prompt, max_tokens=8192, tools=tools)
+            raw = self._call(prompt, max_tokens=16000, tools=tools)
             data = self._parse_json(raw)
             try:
                 return MidtermGenerationResult(
@@ -232,9 +252,9 @@ class AnthropicLLMAdapter:
                 resource_guidance=build_resource_guidance(req.resources or []),
             )
             if attempt > 0:
-                prompt += "\n\nReturn ONLY valid JSON with no extra text."
+                prompt += _RETRY_NUDGE_TOOL_AWARE
             tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL] if req.resources else None
-            raw = self._call(prompt, max_tokens=8192, tools=tools)
+            raw = self._call(prompt, max_tokens=16000, tools=tools)
             data = self._parse_json(raw)
             try:
                 return AssessmentGenerationResult(
@@ -264,11 +284,13 @@ class AnthropicLLMAdapter:
                 previous_part2_score=req.previous_part2_score,
                 weak_areas=", ".join(req.weak_areas),
                 attempt_number=req.attempt_number,
+                readme_content=req.readme_content
+                or "(No project README/design writeup was submitted for this midterm.)",
             )
             if attempt > 0:
-                prompt += "\n\nReturn ONLY valid JSON with no extra text."
+                prompt += _RETRY_NUDGE_TOOL_AWARE
             tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL] if req.own_resources else None
-            raw = self._call(prompt, max_tokens=8192, tools=tools)
+            raw = self._call(prompt, max_tokens=16000, tools=tools)
             data = self._parse_json(raw)
             try:
                 return MidtermGenerationResult(
@@ -293,7 +315,7 @@ class AnthropicLLMAdapter:
                 submission_content=req.submission_content,
             )
             if attempt > 0:
-                prompt += "\n\nReturn ONLY valid JSON with no extra text."
+                prompt += _RETRY_NUDGE_PLAIN
             raw = self._call(prompt, max_tokens=4096)
             data = self._parse_json(raw)
             try:
@@ -327,9 +349,9 @@ class AnthropicLLMAdapter:
                 or "(No project README/design writeup was submitted for this midterm.)",
             )
             if attempt > 0:
-                prompt += "\n\nReturn ONLY valid JSON with no extra text."
+                prompt += _RETRY_NUDGE_TOOL_AWARE
             tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL] if req.resources else None
-            raw = self._call(prompt, max_tokens=4096, tools=tools)
+            raw = self._call(prompt, max_tokens=8000, tools=tools)
             data = self._parse_json(raw)
             try:
                 part1_score = float(data["part1_score"])
@@ -367,7 +389,7 @@ class AnthropicLLMAdapter:
                 reason=req.reason,
             )
             if attempt > 0:
-                prompt += "\n\nReturn ONLY valid JSON with no extra text."
+                prompt += _RETRY_NUDGE_PLAIN
             raw = self._call(prompt, max_tokens=1024)
             data = self._parse_json(raw)
             try:

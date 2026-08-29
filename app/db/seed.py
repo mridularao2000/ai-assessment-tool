@@ -152,8 +152,8 @@ Return ONLY the JSON object. Do not include any other text before or after it.\
 """
 
 # Variables: {topic}, {cumulative_pool_content}, {own_resources_list},
-#            {resource_guidance}, {probe_focus}, {part1_max_marks},
-#            {part2_max_marks}
+#            {resource_guidance}, {readme_content}, {probe_focus},
+#            {part1_max_marks}, {part2_max_marks}
 _MIDTERM_GENERATION = """\
 You are an expert technical assessment designer for a software engineering \
 learning platform, designing a two-part Midterm exam.
@@ -177,6 +177,15 @@ in the project's own resources listed below:
 
 {resource_guidance}
 
+Project README / design writeup on record for this project (submitted when \
+this midterm's pending resources were filled in):
+{readme_content}
+
+If a README is present above, prefer probing the SPECIFIC claims and file/\
+function references it makes — questions tied to concrete claims are easier \
+to grade accurately later than generic ones. If no README is present, probe \
+the project's real decisions using the other resources above instead.
+
 Probe focus for Part 2: {probe_focus}
 
 Part 2 should ask the student to defend specific decisions they made in the \
@@ -195,9 +204,9 @@ Return ONLY the JSON object. Do not include any other text before or after it.\
 """
 
 # Variables: {topic}, {cumulative_pool_content}, {own_resources_list},
-#            {resource_guidance}, {probe_focus}, {part1_max_marks},
-#            {part2_max_marks}, {previous_part1_score}, {previous_part2_score},
-#            {weak_areas}, {attempt_number}
+#            {resource_guidance}, {readme_content}, {probe_focus},
+#            {part1_max_marks}, {part2_max_marks}, {previous_part1_score},
+#            {previous_part2_score}, {weak_areas}, {attempt_number}
 _MIDTERM_RETEST_GENERATION = """\
 You are an expert technical assessment designer for a software engineering \
 learning platform, designing a RETAKE of a two-part Midterm exam.
@@ -224,6 +233,15 @@ in the project's own resources listed below:
 {own_resources_list}
 
 {resource_guidance}
+
+Project README / design writeup on record for this project (submitted when \
+this midterm's pending resources were filled in):
+{readme_content}
+
+If a README is present above, prefer probing the SPECIFIC claims and file/\
+function references it makes — questions tied to concrete claims are easier \
+to grade accurately later than generic ones. If no README is present, probe \
+the project's real decisions using the other resources above instead.
 
 Probe focus for Part 2: {probe_focus}
 
@@ -387,8 +405,8 @@ SEED_TEMPLATES: Final[dict[str, tuple[str, str]]] = {
     "assessment_generation":     ("1.2", _ASSESSMENT_GENERATION),
     "curriculum_analysis":       ("1.0", _CURRICULUM_ANALYSIS),
     "retest_generation":         ("1.2", _RETEST_GENERATION),
-    "midterm_generation":        ("1.0", _MIDTERM_GENERATION),
-    "midterm_retest_generation": ("1.0", _MIDTERM_RETEST_GENERATION),
+    "midterm_generation":        ("1.1", _MIDTERM_GENERATION),
+    "midterm_retest_generation": ("1.1", _MIDTERM_RETEST_GENERATION),
     "grading":                   ("1.0", _GRADING),
     "midterm_grading":           ("1.1", _MIDTERM_GRADING),
     "reschedule_classification": ("1.0", _RESCHEDULE_CLASSIFICATION),

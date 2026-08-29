@@ -3,6 +3,7 @@ from __future__ import annotations
 import random
 import uuid
 from datetime import date, datetime, timedelta
+from typing import Optional
 
 from sqlalchemy.orm import Session, joinedload
 
@@ -251,7 +252,7 @@ class AssessmentService:
 
         detail = curriculum.midterm_detail
         prompt_template = self._fetch_prompt("midterm_retest_generation")
-        cumulative_pool_content, own_resources = self._assemble_midterm_pool(curriculum)
+        cumulative_pool_content, own_resources, readme_content = self._assemble_midterm_pool(curriculum)
 
         result = self.llm.generate_midterm_retest(
             MidtermRetestGenerationRequest(
@@ -266,6 +267,7 @@ class AssessmentService:
                 weak_areas=grade.weak_areas or [],
                 attempt_number=previous_attempt + 1,
                 prompt_template_body=prompt_template.body,
+                readme_content=readme_content,
             )
         )
 
@@ -292,9 +294,19 @@ class AssessmentService:
         self.db.add(assessment)
         return assessment
 
-    def _assemble_midterm_pool(self, curriculum: Curriculum) -> tuple[str, list[str]]:
+    def _assemble_midterm_pool(
+        self, curriculum: Curriculum
+    ) -> tuple[str, list[str], Optional[str]]:
         """Shared Part 1 pool / Part 2 resource assembly, used by both first
         attempts (generate_midterm_content) and retests (_create_midterm_retest).
+
+        Returns (cumulative_pool_content, own_resources, readme_content).
+        A pending_completion slot whose LABEL contains "readme" is kept out
+        of own_resources and returned separately — see
+        MidtermGenerationRequest.readme_content's docstring for why (it's
+        prose to ground Part 2 in, not a URL/label for resource_guidance's
+        web_search/web_fetch instructions — the same separation
+        GradingService._grade_midterm already applies on the grading side).
         """
         from app.services.curriculum_upload_service import assemble_part1_pool
 
@@ -309,10 +321,18 @@ class AssessmentService:
                 for e in qualifying
             )
 
-        own_resources = list(detail.known_now) + [
-            v for v in detail.pending_completion_slots.values() if v
-        ]
-        return cumulative_pool_content, own_resources
+        own_resources = list(detail.known_now)
+        readme_content = None
+        for slug, label in detail.pending_completion_labels.items():
+            value = detail.pending_completion_slots.get(slug)
+            if not value:
+                continue
+            if "readme" in label.lower():
+                readme_content = value
+            else:
+                own_resources.append(value)
+
+        return cumulative_pool_content, own_resources, readme_content
 
     def generate_assessment_content(self, assessment: Assessment) -> None:
         """Populate assessment_text/rubric/duration_minutes on an
@@ -359,7 +379,7 @@ class AssessmentService:
         curriculum = assessment.curriculum
         detail = curriculum.midterm_detail
         prompt_template = self._fetch_prompt("midterm_generation")
-        cumulative_pool_content, own_resources = self._assemble_midterm_pool(curriculum)
+        cumulative_pool_content, own_resources, readme_content = self._assemble_midterm_pool(curriculum)
 
         result = self.llm.generate_midterm(
             MidtermGenerationRequest(
@@ -370,6 +390,7 @@ class AssessmentService:
                 part1_max_marks=detail.part1_max_marks,
                 part2_max_marks=detail.part2_max_marks,
                 prompt_template_body=prompt_template.body,
+                readme_content=readme_content,
             )
         )
         assessment.part1_text = result.part1_text
