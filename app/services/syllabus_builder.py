@@ -14,6 +14,9 @@ _CHAPTER_NUMBER_RE = re.compile(r"\s*Chapter\s+(\d+)", re.IGNORECASE)
 
 @dataclass
 class SyllabusAssessmentRow:
+    id: str                        # Curriculum.id — for referencing this
+    # entry later via the API/control panel (Update Entry, View Entries,
+    # late-send, etc.) without having to look it up separately.
     topic: str
     resources: list[str]           # verbatim, never paraphrased
     completion_date: date
@@ -30,6 +33,7 @@ class SyllabusChapterSection:
 
 @dataclass
 class SyllabusMidtermRow:
+    id: str                          # Curriculum.id — see SyllabusAssessmentRow.id
     topic: str
     chapter_label: str               # verbatim cumulative-span description
     completion_date: date
@@ -68,6 +72,7 @@ def serialize_syllabus_content(content: SyllabusContent) -> dict:
                 "no_standalone_note": ch.no_standalone_note,
                 "assessments": [
                     {
+                        "id": a.id,
                         "topic": a.topic,
                         "resources": a.resources,
                         "completion_date": a.completion_date.isoformat(),
@@ -81,6 +86,7 @@ def serialize_syllabus_content(content: SyllabusContent) -> dict:
         ],
         "midterms": [
             {
+                "id": m.id,
                 "topic": m.topic,
                 "chapter_label": m.chapter_label,
                 "completion_date": m.completion_date.isoformat(),
@@ -137,6 +143,7 @@ def build_syllabus(upload: CurriculumUpload, entries: list[Curriculum]) -> Sylla
     for label in ordered_labels:
         rows = [
             SyllabusAssessmentRow(
+                id=e.id,
                 topic=e.topic,
                 resources=[r.source_ref for r in e.resources],
                 completion_date=e.target_completion_date,
@@ -162,6 +169,7 @@ def build_syllabus(upload: CurriculumUpload, entries: list[Curriculum]) -> Sylla
         ]
         midterm_rows.append(
             SyllabusMidtermRow(
+                id=e.id,
                 topic=e.topic,
                 chapter_label=e.chapter_label,
                 completion_date=e.target_completion_date,

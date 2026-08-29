@@ -306,6 +306,15 @@ class TestSyllabusContent:
         assert ch9.assessments == []
         assert "PM System" in ch9.no_standalone_note
 
+        ch1 = next(s for s in content.chapters if s.chapter_label.startswith("Chapter 1:"))
+        js_internals = next(a for a in ch1.assessments if a.topic.startswith("JS Internals"))
+        real_entry = (
+            db.query(Curriculum)
+            .filter(Curriculum.upload_id == upload.id, Curriculum.topic.like("JS Internals%"))
+            .first()
+        )
+        assert js_internals.id == real_entry.id  # the real Curriculum.id, not a display label
+
     def test_resources_appear_verbatim_not_paraphrased(self, db, seed_raw):
         from app.services.syllabus_builder import build_syllabus
 
@@ -335,6 +344,56 @@ class TestSyllabusContent:
         assert pm_row.resources_hold is True
         assert "WAI-ARIA APG" in pm_row.known_now
         assert pm_row.pending_status[0][1] is False  # nothing filled yet
+
+        real_pm = (
+            db.query(Curriculum)
+            .filter(Curriculum.upload_id == upload.id, Curriculum.topic.like("PM System%"))
+            .first()
+        )
+        assert pm_row.id == real_pm.id
+
+
+class TestSyllabusEmailRendering:
+    """The rendered syllabus email must actually show each entry's real
+    Curriculum.id (and the upload's own id) — the whole point being that
+    it's a genuinely useful reference later (Update Entry, View Entries,
+    late-send, etc.), not just present in the underlying dataclass with
+    nothing surfacing it to the person reading the email."""
+
+    def test_entry_ids_and_upload_id_appear_in_rendered_html(self, db, seed_raw):
+        service = CurriculumUploadService(db, RecordingEmailAdapter(), _scheduler(db))
+        upload = service.ingest(seed_raw, "curriculum_seed.json")
+
+        db.expire_all()
+        js_internals = (
+            db.query(Curriculum)
+            .filter(Curriculum.upload_id == upload.id, Curriculum.topic.like("JS Internals%"))
+            .first()
+        )
+        pm_system = (
+            db.query(Curriculum)
+            .filter(Curriculum.upload_id == upload.id, Curriculum.topic.like("PM System%"))
+            .first()
+        )
+
+        from app.adapters.resend_email import ResendEmailAdapter
+        from app.services.email_service import EmailService
+
+        sent = {}
+
+        class _CapturingResendAdapter(ResendEmailAdapter):
+            def __init__(self):
+                self._from = "Test <test@example.com>"
+
+            def _send(self, to, subject, body_html):
+                sent["html"] = body_html
+
+        EmailService(db, _CapturingResendAdapter()).send_syllabus_email(upload.id)
+
+        html = sent["html"]
+        assert upload.id in html
+        assert js_internals.id in html
+        assert pm_system.id in html
 
 
 class TestPendingResourcesPatch:

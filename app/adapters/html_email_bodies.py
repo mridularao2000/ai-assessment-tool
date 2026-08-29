@@ -208,6 +208,9 @@ class HtmlEmailBodyMixin:
         Completion: {_e(_fmt_date(a.completion_date))} &middot;
         Exam window: {_e(_fmt_date(a.window_start))} – {_e(_fmt_date(a.window_end))}
       </div>
+      <div style="color:#868e96;font-size:0.75rem;font-family:ui-monospace,'Cascadia Code',monospace;margin:2px 0 6px">
+        ID: {_e(a.id)}
+      </div>
       <ul style="margin:6px 0 0 0;padding-left:20px;line-height:1.6">
         {''.join(f'<li>{_e(r)}</li>' for r in a.resources)}
       </ul>
@@ -253,6 +256,9 @@ class HtmlEmailBodyMixin:
   <div style="margin:16px 0;padding:14px 18px;border-left:4px solid #6610f2;background:#f8f9fa">
     <h4 style="margin-top:0">{_e(m.topic)}</h4>
     <p style="color:#6c757d;font-size:0.85rem">{_e(m.chapter_label)} &middot; Due {_e(_fmt_date(m.completion_date))}</p>
+    <p style="color:#868e96;font-size:0.75rem;font-family:ui-monospace,'Cascadia Code',monospace;margin:2px 0 8px">
+      ID: {_e(m.id)}
+    </p>
     {hold_banner}
     <strong>Known now:</strong>
     <ul style="margin:4px 0 10px 0;padding-left:20px">{known_now_html}</ul>
@@ -266,6 +272,9 @@ class HtmlEmailBodyMixin:
 <div style="font-family:sans-serif;color:#212529;max-width:680px;margin:0 auto;padding:24px">
   <h2 style="margin-top:0">Your Curriculum: {_e(data.source_filename)}</h2>
   <p style="color:#6c757d">Uploaded curriculum, organized by chapter.</p>
+  <p style="color:#868e96;font-size:0.75rem;font-family:ui-monospace,'Cascadia Code',monospace;margin:0 0 16px">
+    Upload ID: {_e(data.upload_id)}
+  </p>
   {chapter_sections}
   <h3 style="color:#6610f2;margin-top:28px">Midterms</h3>
   {midterm_sections}
@@ -360,8 +369,14 @@ class HtmlEmailBodyMixin:
             entries_html = ""
             for a in ch.get("assessments", []):
                 resources_html = "".join(f"<li>{_e(r)}</li>" for r in a.get("resources", []))
+                id_html = (
+                    f'<span style="display:block;font-size:11px;color:#8a8a8a;font-family:'
+                    f'ui-monospace,\'Cascadia Code\',monospace">ID: {_e(a["id"])}</span>'
+                    if a.get("id") else ""
+                )
                 entries_html += f"""
     <span style="font-style:italic;font-size:12px">{_e(a['topic'])}</span>
+    {id_html}
     <ul style="margin:2px 0 8px;padding-left:20px;font-size:12px;line-height:1.55">{resources_html}</ul>"""
             if not entries_html and ch.get("no_standalone_note"):
                 entries_html = f'<p style="font-size:12px;font-style:italic;color:#545454">{_e(ch["no_standalone_note"])}</p>'
@@ -381,9 +396,15 @@ class HtmlEmailBodyMixin:
                     span += f" — known now: {_e(', '.join(m['known_now']))}"
                 if pending:
                     span += f" — pending: {_e(', '.join(pending))}"
+                id_html = (
+                    f'<span style="display:block;font-size:11px;color:#8a8a8a;font-family:'
+                    f'ui-monospace,\'Cascadia Code\',monospace">ID: {_e(m["id"])}</span>'
+                    if m.get("id") else ""
+                )
                 midterm_entries += f"""
     <div style="margin:0 0 8px;font-size:12px">
       <span style="display:block;font-style:italic">{_e(m['topic'])}</span>
+      {id_html}
       <span style="font-size:11px;color:#545454">{span}</span>
     </div>"""
             chapter_blocks += f"""
