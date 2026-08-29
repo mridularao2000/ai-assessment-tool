@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from app.dependencies import get_assessment_service, get_curriculum_upload_service, get_email_service
 from app.exceptions import CurriculumUploadValidationError, InvalidStateError, NotFoundError
+from app.interfaces.email import EmailDeliveryError
 from app.models.curriculum import Curriculum
 from app.schemas.curriculum_upload import (
     AddEntryRequest,
@@ -249,6 +250,14 @@ def trigger_late_send(
         raise HTTPException(status_code=404, detail=str(exc))
     except InvalidStateError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+    except EmailDeliveryError as exc:
+        raise HTTPException(status_code=502, detail=f"Email send failed: {exc}")
+    except NotImplementedError as exc:
+        # StubEmailAdapter — no email provider configured on this server
+        # (see app.dependencies._build_email). A misconfiguration, not a
+        # user error, but still worth a readable message instead of an
+        # opaque 500.
+        raise HTTPException(status_code=503, detail=f"Email provider is not configured: {exc}")
 
     return LateSendResponse(curriculum_id=curriculum_id, assessment_id=assessment.id)
 

@@ -13,7 +13,10 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from fastapi import HTTPException
+
 from app.exceptions import InvalidStateError, NotFoundError
+from app.interfaces.email import EmailDeliveryError
 from app.models.assessment import AssessmentStatus
 from app.models.curriculum import CurriculumEntryType
 from app.models.midterm_detail import MidtermDetail
@@ -22,6 +25,7 @@ from app.services.email_service import EmailService
 from app.services.late_token_service import LateTokenService
 from tests.conftest import (
     FakeLLM,
+    NoopEmailAdapter,
     RecordingEmailAdapter,
     make_assessment,
     make_curriculum,
@@ -175,3 +179,54 @@ class TestSuccessPaths:
         recording = RecordingEmailAdapter()
         _svc(db).trigger_late_send(curriculum.id, EmailService(db, recording))
         assert len(recording.assessment_calls) == 1
+
+
+class _BrokenEmailAdapter(NoopEmailAdapter):
+    """A configured-but-failing provider (e.g. Gmail SMTP auth rejected)."""
+
+    def send_assessment_email(self, data) -> None:
+        raise EmailDeliveryError("Gmail SMTP failed: (535, b'BadCredentials')")
+
+
+class _UnconfiguredEmailAdapter(NoopEmailAdapter):
+    """Mirrors StubEmailAdapter (app.dependencies): no provider configured
+    at all, so every send raises loudly rather than silently no-op'ing."""
+
+    def send_assessment_email(self, data) -> None:
+        raise NotImplementedError(
+            "StubEmailAdapter: set GMAIL_ADDRESS/GMAIL_APP_PASSWORD to enable email."
+        )
+
+
+class TestRouteErrorMapping:
+    """The /late-send route (app/api/v1/curriculum_upload.py) must never
+    leak a bare, undiagnosable 500 for a failure that already has a clear
+    cause — a real production incident: GMAIL_ADDRESS/GMAIL_APP_PASSWORD
+    not yet set in Render's dashboard (env vars declared in render.yaml
+    with sync:false are NOT populated by a git push — they need manual
+    entry) left the live server on StubEmailAdapter, whose NotImplementedError
+    propagated as an opaque 500 with no indication of the real cause."""
+
+    def _entry(self, db):
+        curriculum = make_curriculum(db)
+        make_assessment(db, curriculum, status=AssessmentStatus.expired, due_offset_days=-2)
+        LateTokenService(db).grant_monthly(None)
+        return curriculum
+
+    def test_email_delivery_error_maps_to_502(self, db):
+        from app.api.v1.curriculum_upload import trigger_late_send as route
+
+        curriculum = self._entry(db)
+        with pytest.raises(HTTPException) as exc_info:
+            route(curriculum.id, _svc(db), EmailService(db, _BrokenEmailAdapter()))
+        assert exc_info.value.status_code == 502
+        assert "Gmail SMTP failed" in exc_info.value.detail
+
+    def test_unconfigured_email_provider_maps_to_503(self, db):
+        from app.api.v1.curriculum_upload import trigger_late_send as route
+
+        curriculum = self._entry(db)
+        with pytest.raises(HTTPException) as exc_info:
+            route(curriculum.id, _svc(db), EmailService(db, _UnconfiguredEmailAdapter()))
+        assert exc_info.value.status_code == 503
+        assert "not configured" in exc_info.value.detail
