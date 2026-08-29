@@ -3,18 +3,18 @@
 Selected by app.dependencies._build_email() only when Settings.test_mode
 is true. Production never sets that flag, so this adapter is never
 constructed outside an isolated-verification harness — app.adapters.
-resend_email (the real Resend-backed adapter) is untouched and remains
-the only adapter production code paths can reach.
+gmail_smtp_email (the real Gmail-SMTP-backed adapter, the live send path)
+is untouched and remains the adapter production code paths reach.
 
 Distinct from StubEmailAdapter (app.dependencies): that one raises
-NotImplementedError to fail loudly when no RESEND_API_KEY is configured
+NotImplementedError to fail loudly when no email provider is configured
 at all — a misconfiguration signal for a server that was never meant to
 send email. This one is the opposite: a deliberate, safe no-op for a
 server that WILL have real credentials in its environment (inherited
 from .env) but must not use them, because the point of running it was to
 verify something in isolation, not to actually send mail. This is the
 gap that let a real syllabus email go out during a UI-verification run
-with an isolated DB but a live RESEND_API_KEY still in scope — test_mode
+with an isolated DB but a live email provider still in scope — test_mode
 covers this and the equivalent LLM case with one flag instead of two
 independently-rememberable checks.
 """

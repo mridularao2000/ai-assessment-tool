@@ -166,27 +166,30 @@ class RecordingEmailAdapter(NoopEmailAdapter):
 def _no_real_email_in_jobs(monkeypatch):
     """Prevent any test from ever sending a real email via Resend.
 
-    app/jobs/{grade_submission_job,send_assessment_job,send_reminder_job}.py
-    each import `_email` as a module-level singleton directly from
-    app.dependencies (`from app.dependencies import _email`), bypassing
-    FastAPI's dependency-override system entirely. The `client` fixture's
-    app.dependency_overrides never touches this — it only intercepts
-    Depends()-injected services at the route layer.
+    app/jobs/{grade_submission_job,send_assessment_job,send_reminder_job,
+    recheck_pending_midterms_job}.py each import `_email` as a module-level
+    singleton directly from app.dependencies (`from app.dependencies import
+    _email`), bypassing FastAPI's dependency-override system entirely. The
+    `client` fixture's app.dependency_overrides never touches this — it
+    only intercepts Depends()-injected services at the route layer.
 
     A test that invokes one of those job functions directly (rather than
     through an HTTP call whose scheduling is faked) would otherwise hit the
-    REAL ResendEmailAdapter with the REAL API key from .env. This bit us
-    once already (a retake-cap test that called grade_submission_job()
-    directly mailed the real registered inbox), so this is a blanket
-    default for every test going forward — individual tests may still
-    monkeypatch a specific job's `_email` further (e.g. to assert on calls),
-    which layers cleanly on top since monkeypatch undoes in LIFO order.
+    REAL email adapter (GmailSMTPEmailAdapter as of the Resend->Gmail SMTP
+    migration; previously ResendEmailAdapter) with REAL credentials from
+    .env. This bit us once already (a retake-cap test that called
+    grade_submission_job() directly mailed the real registered inbox), so
+    this is a blanket default for every test going forward — individual
+    tests may still monkeypatch a specific job's `_email` further (e.g. to
+    assert on calls), which layers cleanly on top since monkeypatch undoes
+    in LIFO order.
     """
     noop = NoopEmailAdapter()
     for module in (
         "app.jobs.grade_submission_job",
         "app.jobs.send_assessment_job",
         "app.jobs.send_reminder_job",
+        "app.jobs.recheck_pending_midterms_job",
     ):
         monkeypatch.setattr(f"{module}._email", noop)
 

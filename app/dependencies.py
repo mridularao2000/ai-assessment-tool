@@ -9,8 +9,11 @@ Singletons (created once at module load):
                        (fails loudly on any call)
   _email             — FakeEmailAdapter when settings.test_mode is true
                        (same isolated-verification harness — safe no-op,
-                       no network call), else ResendEmailAdapter when
-                       RESEND_API_KEY is set, else StubEmailAdapter (fails
+                       no network call), else GmailSMTPEmailAdapter when
+                       GMAIL_ADDRESS/GMAIL_APP_PASSWORD are set (the live
+                       send path), else ResendEmailAdapter when
+                       RESEND_API_KEY is set (rollback path, kept but
+                       unused by default), else StubEmailAdapter (fails
                        loudly on any call)
 
   settings.test_mode is the ONE flag that neuters every outbound
@@ -74,19 +77,19 @@ class StubEmailAdapter:
     """Development stub — raises NotImplementedError for all email sends."""
 
     def send_assessment_email(self, data: AssessmentEmailData) -> None:
-        raise NotImplementedError("StubEmailAdapter: set RESEND_API_KEY to enable email.")
+        raise NotImplementedError("StubEmailAdapter: set GMAIL_ADDRESS/GMAIL_APP_PASSWORD to enable email.")
 
     def send_reminder_email(self, data: ReminderEmailData) -> None:
-        raise NotImplementedError("StubEmailAdapter: set RESEND_API_KEY to enable email.")
+        raise NotImplementedError("StubEmailAdapter: set GMAIL_ADDRESS/GMAIL_APP_PASSWORD to enable email.")
 
     def send_results_email(self, data: ResultsEmailData) -> None:
-        raise NotImplementedError("StubEmailAdapter: set RESEND_API_KEY to enable email.")
+        raise NotImplementedError("StubEmailAdapter: set GMAIL_ADDRESS/GMAIL_APP_PASSWORD to enable email.")
 
     def send_syllabus_email(self, data: SyllabusEmailData) -> None:
-        raise NotImplementedError("StubEmailAdapter: set RESEND_API_KEY to enable email.")
+        raise NotImplementedError("StubEmailAdapter: set GMAIL_ADDRESS/GMAIL_APP_PASSWORD to enable email.")
 
     def send_midterm_hold_reminder_email(self, data: MidtermHoldReminderEmailData) -> None:
-        raise NotImplementedError("StubEmailAdapter: set RESEND_API_KEY to enable email.")
+        raise NotImplementedError("StubEmailAdapter: set GMAIL_ADDRESS/GMAIL_APP_PASSWORD to enable email.")
 
 
 # ── Stub LLM adapter ──────────────────────────────────────────────────────────
@@ -142,6 +145,9 @@ def _build_email() -> EmailInterface:
     if settings.test_mode:
         from app.adapters.fake_email import FakeEmailAdapter
         return FakeEmailAdapter()  # type: ignore[return-value]
+    if settings.gmail_address and settings.gmail_app_password:
+        from app.adapters.gmail_smtp_email import GmailSMTPEmailAdapter
+        return GmailSMTPEmailAdapter()  # type: ignore[return-value]
     if settings.resend_api_key:
         from app.adapters.resend_email import ResendEmailAdapter
         return ResendEmailAdapter()  # type: ignore[return-value]

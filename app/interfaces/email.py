@@ -1,8 +1,9 @@
 """Email interface contract and associated data types.
 
-The implementing class (e.g. ResendEmailAdapter) is responsible for:
+The implementing class (GmailSMTPEmailAdapter — the live send path; also
+ResendEmailAdapter, kept as an unused rollback path) is responsible for:
   - Composing the HTML/text body from the provided data
-  - Calling the Resend API
+  - Sending it through the underlying provider
   - Raising EmailDeliveryError on non-recoverable send failures
 """
 from __future__ import annotations
@@ -146,9 +147,13 @@ class EmailDeliveryError(EmailError):
 class EmailInterface(Protocol):
     """Structural interface for sending transactional emails.
 
-    Future implementing class: ResendEmailAdapter
-      Located at: app/adapters/resend_email.py
-      Dependencies: resend SDK, app.config.get_settings
+    Implementing classes:
+      GmailSMTPEmailAdapter (live send path)
+        Located at: app/adapters/gmail_smtp_email.py
+        Dependencies: smtplib (stdlib), app.config.get_settings
+      ResendEmailAdapter (rollback path, unused by default)
+        Located at: app/adapters/resend_email.py
+        Dependencies: resend SDK, app.config.get_settings
     """
 
     def send_assessment_email(self, data: AssessmentEmailData) -> None: ...

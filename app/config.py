@@ -43,7 +43,17 @@ class Settings(BaseSettings):
     # ── Mastery ───────────────────────────────────────────────────────────────
     mastery_threshold: float = Field(default=85.0, ge=0.0, le=100.0)
 
+    # ── Email (Gmail SMTP) ────────────────────────────────────────────────────
+    # Live send path — see app.dependencies._build_email(). App Password from
+    # Google Account → Security → 2-Step Verification → App Passwords, not the
+    # account's regular login password. The sending account doesn't need to be
+    # a real inbox — a dedicated free Gmail account works.
+    gmail_address: str = ""
+    gmail_app_password: str = ""
+
     # ── Email (Resend) ────────────────────────────────────────────────────────
+    # Migrated away from as the live send path (see gmail_address above) —
+    # kept configurable, unused by default, as a rollback path only.
     resend_api_key: str = ""
     resend_from_email: str = ""
     resend_from_name: str = "AI Assessment System"

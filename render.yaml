@@ -26,14 +26,26 @@ services:
       - key: ANTHROPIC_API_KEY
         sync: false
 
-      - key: RESEND_API_KEY
+      # Set these in the Render dashboard. App Password from Google Account →
+      # Security → 2-Step Verification → App Passwords — not the account's
+      # regular login password. The sending account doesn't need to be a
+      # real inbox — a dedicated free Gmail account works fine.
+      - key: GMAIL_ADDRESS
         sync: false
 
-      - key: RESEND_FROM_EMAIL
-        sync: false          # Must be a verified sender in your Resend account.
+      - key: GMAIL_APP_PASSWORD
+        sync: false
 
       - key: RESEND_FROM_NAME
         value: AI Assessment System
+
+      # Migrated away from Resend to Gmail SMTP above — kept commented out
+      # (not deleted) as a rollback path. Uncomment both and unset
+      # GMAIL_ADDRESS/GMAIL_APP_PASSWORD to roll back.
+      # - key: RESEND_API_KEY
+      #   sync: false
+      # - key: RESEND_FROM_EMAIL
+      #   sync: false          # Must be a verified sender in your Resend account.
 
       # REQUIRED: set this to your Render service URL.
       # Assessment and reminder emails embed this as the submission link.
