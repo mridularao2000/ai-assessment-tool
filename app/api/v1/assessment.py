@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.dependencies import get_assessment_service, get_scheduler_service
 from app.exceptions import InvalidStateError, InvalidTokenError, NotFoundError
-from app.models.assessment import AssessmentStatus
+from app.models.assessment import Assessment, AssessmentStatus
 from app.models.curriculum import Curriculum, CurriculumEntryType
 from app.schemas.assessment import AssessmentDetailResponse, AssessmentSummary
 from app.services.assessment_service import AssessmentService
@@ -43,6 +45,58 @@ def create_assessment(
     except InvalidStateError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
 
+    return AssessmentSummary.model_validate(assessment)
+
+
+@router.post("/{assessment_id}/resend", response_model=AssessmentSummary)
+def resend_assessment(
+    assessment_id: str,
+    assessment_svc: AssessmentService = Depends(get_assessment_service),
+) -> AssessmentSummary:
+    """Manually re-run the scheduled send for an assessment stuck in
+    `scheduled` status past its scheduled_at.
+
+    send_assessment_job is registered as a one-shot APScheduler `date`
+    trigger — if that single execution raised (an LLM call failure, an
+    email send failure, ...), the row's send_job_claimed_at is released
+    so a retry CAN succeed, but nothing retries it automatically; the job
+    itself is already consumed. This endpoint is that manual retry.
+
+    Safe to call even if the original execution actually did succeed
+    concurrently — send_assessment_job's atomic claim on
+    send_job_claimed_at makes re-running it idempotent, not a duplicate
+    send.
+
+    Raises:
+        NotFoundError: assessment_id doesn't exist.
+        InvalidStateError: not currently `scheduled`, or scheduled_at
+                            hasn't arrived yet (nothing to force).
+    """
+    assessment = assessment_svc.db.get(Assessment, assessment_id)
+    if assessment is None:
+        raise HTTPException(status_code=404, detail=f"Assessment {assessment_id!r} not found.")
+    if assessment.status != AssessmentStatus.scheduled:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Assessment {assessment_id!r} is not in 'scheduled' status "
+                f"(currently {assessment.status.value!r}) — nothing to resend."
+            ),
+        )
+    if datetime.utcnow() < assessment.scheduled_at:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Assessment {assessment_id!r} isn't due to send until "
+                f"{assessment.scheduled_at.isoformat()} — refusing to send it early."
+            ),
+        )
+
+    from app.jobs.send_assessment_job import send_assessment_job
+
+    send_assessment_job(assessment_id)
+
+    assessment_svc.db.refresh(assessment)
     return AssessmentSummary.model_validate(assessment)
 
 
