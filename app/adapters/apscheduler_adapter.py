@@ -53,6 +53,7 @@ class APSchedulerAdapter:
             self._scheduler.start()
         self._schedule_monthly_token_grant()
         self._schedule_pending_midterm_recheck()
+        self._schedule_stuck_assessment_recheck()
 
     def _schedule_monthly_token_grant(self) -> None:
         """Register the recurring monthly late-submission token grant.
@@ -89,6 +90,24 @@ class APSchedulerAdapter:
             hour=6,
             minute=0,
             id="recheck_pending_midterms_daily",
+            replace_existing=True,
+        )
+
+    def _schedule_stuck_assessment_recheck(self) -> None:
+        """Register the recurring self-healing sweep for assessments stuck
+        in `scheduled` status past their scheduled_at — see
+        recheck_stuck_assessments_job for why this is needed (a one-shot
+        `date`-trigger job that failed its single execution never retries
+        itself). Every 15 minutes, fixed ID + replace_existing=True, same
+        idempotent-across-restarts shape as the other two recurring jobs.
+        """
+        from app.jobs.recheck_stuck_assessments_job import recheck_stuck_assessments_job
+
+        self._scheduler.add_job(
+            recheck_stuck_assessments_job,
+            trigger="cron",
+            minute="*/15",
+            id="recheck_stuck_assessments",
             replace_existing=True,
         )
 

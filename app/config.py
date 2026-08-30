@@ -85,6 +85,20 @@ class Settings(BaseSettings):
     # sends nothing — set once a real secondary address is confirmed.
     transcript_secondary_recipient_email: str = ""
     transcript_secondary_interval_days: int = Field(default=14, ge=1)
+    # Self-healing sweep for send_assessment_job's one-shot-job failure mode
+    # (see recheck_stuck_assessments_job) — how far past scheduled_at an
+    # assessment must sit still `scheduled` before the sweep treats it as
+    # stuck rather than legitimately mid-flight.
+    stuck_assessment_grace_minutes: int = Field(default=30, ge=1)
+    # Ceiling on automatic retries: once a row has been stuck past
+    # scheduled_at for longer than this, the sweep stops calling the LLM for
+    # it automatically and just logs loudly instead. Without this, a
+    # persistent failure (bad credentials, insufficient API credit, a broken
+    # prompt template) gets retried every 15 minutes forever — real API
+    # spend on autopilot, indefinitely, for a cause a retry can't fix. A
+    # human must resolve the real cause and use /resend manually past this
+    # point.
+    stuck_assessment_max_auto_retry_hours: int = Field(default=3, ge=1)
 
     @property
     def results_recipient_emails(self) -> list[str]:
@@ -95,6 +109,14 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     llm_model: str = "claude-sonnet-4-6"
     llm_max_retries: int = 3
+    # Circuit breaker for the 5 tool-enabled (web_search/web_fetch) call
+    # sites specifically — see AnthropicLLMAdapter._CallBudget. Cumulative
+    # input+output tokens across every attempt within one logical
+    # generate_*/grade_*_submission call; once crossed, the next attempt
+    # aborts immediately instead of making another expensive request.
+    # Defense-in-depth on top of the tool-round-trip cap and the reduced
+    # tool-path attempt count — not the primary fix, a backstop.
+    llm_tool_call_budget_tokens: int = Field(default=200_000, ge=1000)
     # ── Test / isolated mode ─────────────────────────────────────────────────────
     # Single flag for standing up a fully isolated server (e.g. to verify a
     # UI/API change) with ZERO real outbound side effects — neither a real

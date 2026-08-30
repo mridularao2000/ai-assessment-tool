@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import anthropic
+
+logger = logging.getLogger(__name__)
 
 from app.adapters.nonfetchable_resources import build_resource_guidance
 from app.config import get_settings
@@ -15,6 +18,7 @@ from app.interfaces.llm import (
     CurriculumAnalysisResult,
     GradingRequest,
     GradingResult,
+    LLMToolBudgetExceededError,
     LLMUnavailableError,
     LLMValidationError,
     MidtermGenerationRequest,
@@ -32,16 +36,61 @@ from app.interfaces.llm import (
 # _20260209 variants support Opus 5/4.8/4.7/4.6, Sonnet 5, and Sonnet 4.6;
 # the project's configured model qualifies). No beta header required.
 # Only attached to calls that pass resources — never to standalone calls.
+#
+# max_uses capped low after a confirmed incident (2026-08-30): a tool-enabled
+# call that exhausts its round-trip budget without producing a final answer
+# raises LLMValidationError ("No text block in response content"), which
+# _retry() retried up to 3 times — each retry re-running the tool-use cycle
+# again, each round re-sending accumulated context. Two real incidents both
+# burned significant credit this way, and in both, every retry failed
+# identically.
+#
+# allowed_callers=["direct"] (2026-08-30, second incident): confirmed via a
+# live, authorized single call that even with the max_uses caps in place, one
+# *successful* attempt still cost 316k input tokens. Root cause, confirmed
+# from the raw response content, not assumed: these _20260209 tool versions
+# use code execution internally (Anthropic's own docs: "the _20260209
+# versions of web search and web fetch use code execution internally to
+# apply dynamic filters against search results") — by default this lets the
+# model call web_search/web_fetch as awaitable functions from inside a
+# code_execution sandbox (`await web_search({...})`) rather than only as
+# direct top-level tool calls. In the captured incident the model used this
+# to repeatedly re-print full fetched page content back into its own context
+# across 19 separate code_execution rounds (e.g. printing one ~26,600-char
+# page in five sequential 5,000-char slices) — each round resending the
+# growing transcript, which is what actually drove the token count, not the
+# search/fetch call counts themselves (those were correctly capped at
+# exactly 2 and 3 the whole time — max_uses was never bypassed).
+# allowed_callers restricts these two tools to direct invocation only,
+# closing that avenue at its source rather than trying to separately cap a
+# tool (code_execution) that isn't declared here and whose availability is
+# an internal side effect of using web_search_20260209/web_fetch_20260209 —
+# Anthropic's own docs warn that adding a *separate* standalone
+# code_execution tool alongside these versions "creates two execution
+# environments, which can confuse the model," so that path was deliberately
+# not taken. Not yet confirmed against a second live call (see the
+# 2026-08-30 incident report) — the mechanism is well-documented and
+# directly matches the observed failure, but treat it as verified only once
+# re-tested.
 WEB_SEARCH_TOOL: dict[str, Any] = {
     "type": "web_search_20260209",
     "name": "web_search",
-    "max_uses": 8,
+    "max_uses": 2,
+    "allowed_callers": ["direct"],
 }
 WEB_FETCH_TOOL: dict[str, Any] = {
     "type": "web_fetch_20260209",
     "name": "web_fetch",
-    "max_uses": 8,
-    "max_content_tokens": 20000,
+    # Lowered from 3: the incident's 3rd web_fetch call was a same-URL retry
+    # after the model's own code hit a TypeError, not a genuine 3rd distinct
+    # resource — one fetch per resource (2 resources) is the legitimate case.
+    "max_uses": 2,
+    # Lowered from 20000: a secondary, independent backstop that shrinks the
+    # raw page content available to be re-injected into context in the first
+    # place, regardless of whether allowed_callers fully closes the
+    # code_execution avenue above.
+    "max_content_tokens": 8000,
+    "allowed_callers": ["direct"],
 }
 
 # Retry nudges appended on attempt > 0 (see _retry). The plain one covers
@@ -62,6 +111,39 @@ _RETRY_NUDGE_TOOL_AWARE = (
     "attempt ran out of response budget before producing an answer."
 )
 
+# Tool-enabled call sites get a tighter attempt cap than the general
+# schema-mismatch retry budget (settings.llm_max_retries, still 3 for
+# non-tool paths). Both real incidents showed every retry of a tool-budget
+# failure failing identically — a 3rd blind repeat has never once helped
+# and just re-pays for the same failure. 2 total attempts (the original +
+# one adaptive retry carrying _RETRY_NUDGE_TOOL_AWARE) is what's actually
+# justified: enough to recover a genuine one-off stumble, not enough to
+# burn a third full tool-use cycle chasing a failure that's already
+# repeated once.
+_TOOL_PATH_MAX_ATTEMPTS = 2
+
+
+class _CallBudget:
+    """Defense-in-depth circuit breaker, independent of the tool-round-trip
+    cap and the reduced attempt count above. Tracks cumulative input+output
+    tokens spent across every attempt within one logical generate_*/
+    grade_*_submission invocation (i.e. across one _retry() loop, all
+    attempts combined) — not just one API call. If a single attempt still
+    burns an unreasonable amount despite both caps above (e.g. unusually
+    large web_fetch results), this stops the *next* attempt from even
+    starting, rather than waiting for max_attempts to run out on its own.
+    """
+
+    def __init__(self, ceiling: int) -> None:
+        self.ceiling = ceiling
+        self.spent = 0
+
+    def charge(self, tokens: int) -> None:
+        self.spent += tokens
+
+    def exhausted(self) -> bool:
+        return self.spent >= self.ceiling
+
 
 class AnthropicLLMAdapter:
     """LLMInterface implementation using Anthropic Claude via the official SDK."""
@@ -74,6 +156,7 @@ class AnthropicLLMAdapter:
         )
         self._model = settings.llm_model
         self._max_retries = settings.llm_max_retries
+        self._tool_call_budget_tokens = settings.llm_tool_call_budget_tokens
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
@@ -82,12 +165,25 @@ class AnthropicLLMAdapter:
         prompt: str,
         max_tokens: int = 4096,
         tools: list[dict[str, Any]] | None = None,
+        budget: "_CallBudget | None" = None,
     ) -> str:
         """Call Claude and return the text response, mapping SDK errors.
 
         tools is opt-in — omitted entirely for standalone call sites, so their
         request shape (and therefore response.content shape) is unchanged.
+
+        budget is opt-in too (only the 5 tool-enabled call sites pass one) —
+        see _CallBudget. Checked BEFORE spending anything on this attempt,
+        so an already-exhausted budget aborts without making another API
+        call at all.
         """
+        if budget is not None and budget.exhausted():
+            raise LLMValidationError(
+                f"Circuit breaker: {budget.spent} tokens already spent across "
+                f"prior attempts in this generation (ceiling {budget.ceiling}) "
+                "without producing valid output — aborting rather than "
+                "spending further on a call that keeps failing the same way."
+            )
         try:
             kwargs: dict[str, Any] = dict(
                 model=self._model,
@@ -97,6 +193,19 @@ class AnthropicLLMAdapter:
             if tools:
                 kwargs["tools"] = tools
             message = self._client.messages.create(**kwargs)
+            usage = getattr(message, "usage", None)
+            if usage is not None:
+                spent = usage.input_tokens + usage.output_tokens
+                if budget is not None:
+                    budget.charge(spent)
+                logger.info(
+                    "Anthropic call: model=%s input_tokens=%s output_tokens=%s "
+                    "cache_creation_input_tokens=%s cache_read_input_tokens=%s tools=%s",
+                    self._model, usage.input_tokens, usage.output_tokens,
+                    getattr(usage, "cache_creation_input_tokens", None),
+                    getattr(usage, "cache_read_input_tokens", None),
+                    bool(tools),
+                )
             return self._extract_text(message.content)
         except (anthropic.APITimeoutError, anthropic.APIConnectionError) as exc:
             raise LLMUnavailableError(f"Claude API unreachable: {exc}") from exc
@@ -116,7 +225,23 @@ class AnthropicLLMAdapter:
         """
         parts = [block.text for block in content if getattr(block, "type", None) == "text"]
         if not parts:
-            raise LLMValidationError(f"No text block in response content: {content!r}")
+            # Bounded, specific diagnostic instead of dumping the full
+            # content!r (which, for a tool-heavy failure, can be dozens of
+            # blocks including full fetched-page text — unusable as a log
+            # line and expensive to even format). Enough to diagnose WHY
+            # without re-running anything: how many rounds, which tool(s),
+            # what the last thing attempted was.
+            tool_round_counts: dict[str, int] = {}
+            for block in content:
+                if getattr(block, "type", None) == "server_tool_use":
+                    name = getattr(block, "name", None) or "?"
+                    tool_round_counts[name] = tool_round_counts.get(name, 0) + 1
+            last_block = str(content[-1])[:300] if content else "(empty content)"
+            raise LLMValidationError(
+                f"No text block in response content after {len(content)} block(s) "
+                f"({sum(tool_round_counts.values())} tool-use round(s): "
+                f"{tool_round_counts}). Last block: {last_block!r}"
+            )
         return "\n".join(parts)
 
     def _parse_json(self, text: str) -> dict[str, Any]:
@@ -140,15 +265,50 @@ class AnthropicLLMAdapter:
         except KeyError as exc:
             raise LLMValidationError(f"Prompt template missing key: {exc}") from exc
 
-    def _retry(self, fn: Any, *args: Any) -> Any:
-        """Call fn(*args), retrying up to max_retries on LLMValidationError."""
+    def _retry(
+        self,
+        fn: Any,
+        *args: Any,
+        max_attempts: int | None = None,
+        budget_ceiling: int | None = None,
+    ) -> Any:
+        """Call fn(*args, attempt=N, budget=...), retrying up to max_attempts
+        on LLMValidationError.
+
+        max_attempts defaults to settings.llm_max_retries when omitted; the
+        5 tool-enabled call sites pass _TOOL_PATH_MAX_ATTEMPTS explicitly
+        instead (see its docstring). budget_ceiling, when given, constructs
+        one _CallBudget shared across every attempt in this call — also
+        tool-enabled call sites only.
+
+        When budget_ceiling was given (i.e. this is one of the 5
+        tool-enabled call sites) and every attempt is exhausted, the final
+        raise is LLMToolBudgetExceededError rather than the plain
+        LLMValidationError from the last attempt — this is the one shared
+        point all 5 tool-enabled methods route through, so callers
+        (send_assessment_job) can catch it specifically and mark the row
+        for manual diagnosis instead of leaving it silently retryable.
+        """
+        attempts = max_attempts if max_attempts is not None else self._max_retries
+        budget = _CallBudget(budget_ceiling) if budget_ceiling is not None else None
         last_exc: LLMValidationError | None = None
-        for attempt in range(self._max_retries):
+        for attempt in range(attempts):
             try:
-                return fn(*args, attempt=attempt)
+                return fn(*args, attempt=attempt, budget=budget)
             except LLMValidationError as exc:
                 last_exc = exc
         assert last_exc is not None
+        if budget is not None:
+            raise LLMToolBudgetExceededError(
+                f"Tool-enabled generation exhausted all {attempts} attempt(s) "
+                f"without producing valid output — {budget.spent} token(s) "
+                f"spent (ceiling {budget.ceiling}). Not retrying further; "
+                f"this needs manual diagnosis, not another automatic attempt. "
+                f"Last failure: {last_exc}",
+                tokens_spent=budget.spent,
+                attempts_made=attempts,
+                ceiling=budget.ceiling,
+            ) from last_exc
         raise last_exc
 
     # ── LLMInterface methods ──────────────────────────────────────────────────
@@ -156,7 +316,9 @@ class AnthropicLLMAdapter:
     def analyze_curriculum(
         self, request: CurriculumAnalysisRequest
     ) -> CurriculumAnalysisResult:
-        def _attempt(req: CurriculumAnalysisRequest, attempt: int) -> CurriculumAnalysisResult:
+        def _attempt(
+            req: CurriculumAnalysisRequest, attempt: int, budget: "_CallBudget | None" = None
+        ) -> CurriculumAnalysisResult:
             prompt = self._render(
                 req.prompt_template_body,
                 topic=req.topic,
@@ -181,7 +343,9 @@ class AnthropicLLMAdapter:
     def generate_assessment(
         self, request: AssessmentGenerationRequest
     ) -> AssessmentGenerationResult:
-        def _attempt(req: AssessmentGenerationRequest, attempt: int) -> AssessmentGenerationResult:
+        def _attempt(
+            req: AssessmentGenerationRequest, attempt: int, budget: "_CallBudget | None" = None
+        ) -> AssessmentGenerationResult:
             prompt = self._render(
                 req.prompt_template_body,
                 topic=req.topic,
@@ -191,7 +355,7 @@ class AnthropicLLMAdapter:
             if attempt > 0:
                 prompt += _RETRY_NUDGE_TOOL_AWARE
             tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL] if req.resources else None
-            raw = self._call(prompt, max_tokens=16000, tools=tools)
+            raw = self._call(prompt, max_tokens=16000, tools=tools, budget=budget)
             data = self._parse_json(raw)
             try:
                 return AssessmentGenerationResult(
@@ -202,12 +366,19 @@ class AnthropicLLMAdapter:
             except (KeyError, TypeError, ValueError) as exc:
                 raise LLMValidationError(f"generate_assessment schema mismatch: {exc}\n\nData: {data}") from exc
 
+        if request.resources:
+            return self._retry(
+                _attempt, request,
+                max_attempts=_TOOL_PATH_MAX_ATTEMPTS, budget_ceiling=self._tool_call_budget_tokens,
+            )
         return self._retry(_attempt, request)
 
     def generate_midterm(
         self, request: MidtermGenerationRequest
     ) -> MidtermGenerationResult:
-        def _attempt(req: MidtermGenerationRequest, attempt: int) -> MidtermGenerationResult:
+        def _attempt(
+            req: MidtermGenerationRequest, attempt: int, budget: "_CallBudget | None" = None
+        ) -> MidtermGenerationResult:
             prompt = self._render(
                 req.prompt_template_body,
                 topic=req.topic,
@@ -223,7 +394,7 @@ class AnthropicLLMAdapter:
             if attempt > 0:
                 prompt += _RETRY_NUDGE_TOOL_AWARE
             tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL] if req.own_resources else None
-            raw = self._call(prompt, max_tokens=16000, tools=tools)
+            raw = self._call(prompt, max_tokens=16000, tools=tools, budget=budget)
             data = self._parse_json(raw)
             try:
                 return MidtermGenerationResult(
@@ -236,12 +407,19 @@ class AnthropicLLMAdapter:
             except (KeyError, TypeError, ValueError) as exc:
                 raise LLMValidationError(f"generate_midterm schema mismatch: {exc}\n\nData: {data}") from exc
 
+        if request.own_resources:
+            return self._retry(
+                _attempt, request,
+                max_attempts=_TOOL_PATH_MAX_ATTEMPTS, budget_ceiling=self._tool_call_budget_tokens,
+            )
         return self._retry(_attempt, request)
 
     def generate_retest(
         self, request: RetestGenerationRequest
     ) -> AssessmentGenerationResult:
-        def _attempt(req: RetestGenerationRequest, attempt: int) -> AssessmentGenerationResult:
+        def _attempt(
+            req: RetestGenerationRequest, attempt: int, budget: "_CallBudget | None" = None
+        ) -> AssessmentGenerationResult:
             prompt = self._render(
                 req.prompt_template_body,
                 topic=req.topic,
@@ -254,7 +432,7 @@ class AnthropicLLMAdapter:
             if attempt > 0:
                 prompt += _RETRY_NUDGE_TOOL_AWARE
             tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL] if req.resources else None
-            raw = self._call(prompt, max_tokens=16000, tools=tools)
+            raw = self._call(prompt, max_tokens=16000, tools=tools, budget=budget)
             data = self._parse_json(raw)
             try:
                 return AssessmentGenerationResult(
@@ -265,12 +443,19 @@ class AnthropicLLMAdapter:
             except (KeyError, TypeError, ValueError) as exc:
                 raise LLMValidationError(f"generate_retest schema mismatch: {exc}\n\nData: {data}") from exc
 
+        if request.resources:
+            return self._retry(
+                _attempt, request,
+                max_attempts=_TOOL_PATH_MAX_ATTEMPTS, budget_ceiling=self._tool_call_budget_tokens,
+            )
         return self._retry(_attempt, request)
 
     def generate_midterm_retest(
         self, request: MidtermRetestGenerationRequest
     ) -> MidtermGenerationResult:
-        def _attempt(req: MidtermRetestGenerationRequest, attempt: int) -> MidtermGenerationResult:
+        def _attempt(
+            req: MidtermRetestGenerationRequest, attempt: int, budget: "_CallBudget | None" = None
+        ) -> MidtermGenerationResult:
             prompt = self._render(
                 req.prompt_template_body,
                 topic=req.topic,
@@ -290,7 +475,7 @@ class AnthropicLLMAdapter:
             if attempt > 0:
                 prompt += _RETRY_NUDGE_TOOL_AWARE
             tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL] if req.own_resources else None
-            raw = self._call(prompt, max_tokens=16000, tools=tools)
+            raw = self._call(prompt, max_tokens=16000, tools=tools, budget=budget)
             data = self._parse_json(raw)
             try:
                 return MidtermGenerationResult(
@@ -303,10 +488,17 @@ class AnthropicLLMAdapter:
             except (KeyError, TypeError, ValueError) as exc:
                 raise LLMValidationError(f"generate_midterm_retest schema mismatch: {exc}\n\nData: {data}") from exc
 
+        if request.own_resources:
+            return self._retry(
+                _attempt, request,
+                max_attempts=_TOOL_PATH_MAX_ATTEMPTS, budget_ceiling=self._tool_call_budget_tokens,
+            )
         return self._retry(_attempt, request)
 
     def grade_submission(self, request: GradingRequest) -> GradingResult:
-        def _attempt(req: GradingRequest, attempt: int) -> GradingResult:
+        def _attempt(
+            req: GradingRequest, attempt: int, budget: "_CallBudget | None" = None
+        ) -> GradingResult:
             prompt = self._render(
                 req.prompt_template_body,
                 assessment_text=req.assessment_text,
@@ -333,7 +525,9 @@ class AnthropicLLMAdapter:
         return self._retry(_attempt, request)
 
     def grade_midterm_submission(self, request: MidtermGradingRequest) -> MidtermGradingResult:
-        def _attempt(req: MidtermGradingRequest, attempt: int) -> MidtermGradingResult:
+        def _attempt(
+            req: MidtermGradingRequest, attempt: int, budget: "_CallBudget | None" = None
+        ) -> MidtermGradingResult:
             prompt = self._render(
                 req.prompt_template_body,
                 part1_text=req.part1_text,
@@ -351,7 +545,7 @@ class AnthropicLLMAdapter:
             if attempt > 0:
                 prompt += _RETRY_NUDGE_TOOL_AWARE
             tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL] if req.resources else None
-            raw = self._call(prompt, max_tokens=8000, tools=tools)
+            raw = self._call(prompt, max_tokens=8000, tools=tools, budget=budget)
             data = self._parse_json(raw)
             try:
                 part1_score = float(data["part1_score"])
@@ -373,6 +567,11 @@ class AnthropicLLMAdapter:
             except (KeyError, TypeError, ValueError) as exc:
                 raise LLMValidationError(f"grade_midterm_submission schema mismatch: {exc}\n\nData: {data}") from exc
 
+        if request.resources:
+            return self._retry(
+                _attempt, request,
+                max_attempts=_TOOL_PATH_MAX_ATTEMPTS, budget_ceiling=self._tool_call_budget_tokens,
+            )
         return self._retry(_attempt, request)
 
     def classify_reschedule_request(
@@ -383,7 +582,9 @@ class AnthropicLLMAdapter:
             "procrastination", "lack_of_preparation", "missed_schedule",
         }
 
-        def _attempt(req: RescheduleClassificationRequest, attempt: int) -> RescheduleClassificationResult:
+        def _attempt(
+            req: RescheduleClassificationRequest, attempt: int, budget: "_CallBudget | None" = None
+        ) -> RescheduleClassificationResult:
             prompt = self._render(
                 req.prompt_template_body,
                 reason=req.reason,

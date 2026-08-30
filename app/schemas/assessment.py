@@ -17,6 +17,11 @@ class AssessmentSummary(BaseModel):
     scheduled_at: datetime
     due_date: datetime
     duration_minutes: Optional[int] = None
+    # Definitive: assessment_text/part1_text IS NOT NULL. Unlike `status`,
+    # this can't be ambiguous about whether an `expired` row's content was
+    # ever actually generated (and therefore ever cost an LLM call) — see
+    # Assessment.content_generated.
+    content_generated: bool = False
 
 
 class AssessmentDetailResponse(BaseModel):

@@ -20,6 +20,8 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta
 
+from app.interfaces.email import EmailDeliveryError
+from app.interfaces.llm import LLMValidationError
 from app.models.assessment import Assessment, AssessmentStatus
 from app.utils.token_auth import generate_submission_token
 from tests.conftest import FakeLLM, TestSessionLocal, make_curriculum, seed_prompt_templates
@@ -102,3 +104,49 @@ class TestResendStuckAssessment:
     def test_unknown_assessment_is_404(self, client):
         response = client.post("/api/v1/assessments/does-not-exist/resend")
         assert response.status_code == 404
+
+
+class TestResendRouteErrorMapping:
+    """A bare 500 with no detail is exactly what a real production resend
+    attempt hit — the route called send_assessment_job with no exception
+    handling at all, so whatever it raised propagated as an opaque 500.
+    This must never happen again for a failure that already has a clear
+    cause."""
+
+    def test_llm_failure_maps_to_503_with_detail(self, client, db, monkeypatch):
+        seed_prompt_templates(db)
+        monkeypatch.setattr("app.jobs.send_assessment_job.SessionLocal", TestSessionLocal)
+
+        class _BrokenLLM(FakeLLM):
+            def generate_assessment(self, req):
+                raise LLMValidationError("model returned invalid JSON after 3 retries")
+
+        monkeypatch.setattr("app.jobs.send_assessment_job._llm", _BrokenLLM())
+        curriculum = make_curriculum(db, entry_type="assessment")
+        assessment = _make_scheduled_assessment(
+            db, curriculum, scheduled_at=datetime.utcnow() - timedelta(days=1)
+        )
+
+        response = client.post(f"/api/v1/assessments/{assessment.id}/resend")
+
+        assert response.status_code == 503
+        assert "invalid JSON" in response.json()["detail"]
+
+    def test_email_failure_maps_to_502_with_detail(self, client, db, monkeypatch):
+        seed_prompt_templates(db)
+        _patch_job_infra(monkeypatch)
+
+        class _BrokenEmail:
+            def send_assessment_email(self, data) -> None:
+                raise EmailDeliveryError("Gmail SMTP failed: (535, b'BadCredentials')")
+
+        monkeypatch.setattr("app.jobs.send_assessment_job._email", _BrokenEmail())
+        curriculum = make_curriculum(db, entry_type="assessment")
+        assessment = _make_scheduled_assessment(
+            db, curriculum, scheduled_at=datetime.utcnow() - timedelta(days=1)
+        )
+
+        response = client.post(f"/api/v1/assessments/{assessment.id}/resend")
+
+        assert response.status_code == 502
+        assert "Gmail SMTP failed" in response.json()["detail"]

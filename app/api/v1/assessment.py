@@ -6,6 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.dependencies import get_assessment_service, get_scheduler_service
 from app.exceptions import InvalidStateError, InvalidTokenError, NotFoundError
+from app.interfaces.email import EmailDeliveryError
+from app.interfaces.llm import LLMUnavailableError, LLMValidationError
 from app.models.assessment import Assessment, AssessmentStatus
 from app.models.curriculum import Curriculum, CurriculumEntryType
 from app.schemas.assessment import AssessmentDetailResponse, AssessmentSummary
@@ -94,7 +96,25 @@ def resend_assessment(
 
     from app.jobs.send_assessment_job import send_assessment_job
 
-    send_assessment_job(assessment_id)
+    try:
+        send_assessment_job(assessment_id)
+    except LLMValidationError as exc:
+        raise HTTPException(
+            status_code=503, detail=f"Assessment generation failed after all retries: {exc}"
+        )
+    except LLMUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Claude API unavailable: {exc}. If this is a billing/rate-limit "
+                "error, check your Anthropic console balance before retrying — "
+                "each retry re-attempts a full (expensive, tool-using) generation."
+            ),
+        )
+    except EmailDeliveryError as exc:
+        raise HTTPException(status_code=502, detail=f"Email send failed: {exc}")
+    except NotImplementedError as exc:
+        raise HTTPException(status_code=503, detail=f"Email provider is not configured: {exc}")
 
     assessment_svc.db.refresh(assessment)
     return AssessmentSummary.model_validate(assessment)

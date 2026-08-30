@@ -170,3 +170,63 @@ class TestResendSyllabusRoute:
     def test_unknown_upload_id_is_404(self, client):
         response = client.post("/api/v1/curriculum-uploads/does-not-exist/resend-syllabus")
         assert response.status_code == 404
+
+
+class TestContentGeneratedFlag:
+    """GET /api/v1/curriculum/{id} must report whether an assessment's
+    content was actually generated (assessment_text/part1_text IS NOT
+    NULL), not just its status — an `expired` row is ambiguous from status
+    alone (see Assessment.content_generated's docstring)."""
+
+    def test_true_once_generated_false_before(self, client, db):
+        seed_prompt_templates(db)
+        future_date = (date.today() + timedelta(days=14)).isoformat()
+
+        curriculum_id = client.post(
+            "/api/v1/curriculum/",
+            data={"topic": "Content Flag Test", "target_completion_date": future_date},
+        ).json()["curriculum_id"]
+
+        body = client.get(f"/api/v1/curriculum/{curriculum_id}").json()
+        assert body["assessments"][0]["content_generated"] is True  # standalone generates eagerly
+
+    def test_false_for_a_retroactively_expired_entry_that_was_never_late_sent(self, client, db):
+        """A curriculum-upload entry whose window closed before upload gets
+        an Assessment row created directly in `expired` status with no
+        content — status alone would misreport this as "was generated"."""
+        from app.models.assessment import Assessment, AssessmentStatus
+        from app.models.curriculum import Curriculum, CurriculumEntryType
+        from app.models.curriculum_upload import CurriculumUpload
+        from app.utils.token_auth import generate_submission_token
+        from datetime import datetime
+
+        seed_prompt_templates(db)
+        upload = CurriculumUpload(source_filename="x.json")
+        db.add(upload)
+        db.flush()
+        curriculum = Curriculum(
+            topic="Long Overdue Topic",
+            target_completion_date=date.today() - timedelta(days=30),
+            entry_type=CurriculumEntryType.assessment,
+            upload_id=upload.id,
+            chapter_label="Chapter 1",
+            max_marks=50.0,
+        )
+        db.add(curriculum)
+        db.flush()
+        assessment_id = "test-assessment-id"
+        db.add(Assessment(
+            id=assessment_id,
+            curriculum_id=curriculum.id,
+            assessment_text=None,
+            scheduled_at=datetime.utcnow() - timedelta(days=27),
+            reminder_at=datetime.utcnow() - timedelta(days=28),
+            due_date=datetime.utcnow() - timedelta(days=25),
+            status=AssessmentStatus.expired,
+            submission_token=generate_submission_token(assessment_id),
+        ))
+        db.commit()
+
+        body = client.get(f"/api/v1/curriculum/{curriculum.id}").json()
+        assert body["assessments"][0]["status"] == "expired"
+        assert body["assessments"][0]["content_generated"] is False

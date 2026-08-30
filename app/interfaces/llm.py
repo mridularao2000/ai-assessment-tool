@@ -302,6 +302,25 @@ class LLMValidationError(LLMError):
     cannot be coerced into the expected output type after all retries."""
 
 
+class LLMToolBudgetExceededError(LLMValidationError):
+    """Raised specifically when a tool-enabled generation (one of the 5
+    web_search/web_fetch call sites) exhausts every attempt in its
+    _TOOL_PATH_MAX_ATTEMPTS budget without producing valid output — see
+    AnthropicLLMAdapter._retry(). A subclass of LLMValidationError so any
+    existing `except LLMValidationError` handling still catches it, but
+    distinct so callers that need to (send_assessment_job) can tell "this
+    specific generation is expensive and keeps failing the same way, stop
+    retrying it automatically" apart from an ordinary one-off schema
+    mismatch that a ordinary retry legitimately recovers from.
+    """
+
+    def __init__(self, message: str, *, tokens_spent: int, attempts_made: int, ceiling: int):
+        super().__init__(message)
+        self.tokens_spent = tokens_spent
+        self.attempts_made = attempts_made
+        self.ceiling = ceiling
+
+
 class LLMUnavailableError(LLMError):
     """Raised when the LLM API is unreachable or returns an unrecoverable
     HTTP-level error (e.g. 500, rate-limit exhaustion)."""

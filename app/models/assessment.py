@@ -23,6 +23,14 @@ class AssessmentStatus(str, enum.Enum):
     late_submitted = "late_submitted"  # submitted after due_date using a late token
     completed = "completed"   # graded
     expired = "expired"       # due_date passed with no submission
+    # Generation exhausted its tool-call budget without producing valid
+    # output (LLMToolBudgetExceededError — see AnthropicLLMAdapter._retry).
+    # Distinct from a generic failure specifically so recheck_stuck_
+    # assessments_job's sweep (which only matches status == scheduled)
+    # never auto-retries it — a human must resolve the cause and use
+    # POST /resend. No DB migration needed: status is a plain VARCHAR
+    # column with no CHECK constraint (confirmed against the live schema).
+    needs_manual_diagnosis = "needs_manual_diagnosis"
 
 
 class Assessment(Base):
@@ -93,6 +101,18 @@ class Assessment(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=utcnow
     )
+
+    @property
+    def content_generated(self) -> bool:
+        """True once the actual LLM-generated content exists on this row —
+        assessment_text (standalone/Assessment-type) or part1_text
+        (Midterm-type). Distinct from `status`: an `expired` row can be
+        either a genuine generate-then-never-submitted case, or one created
+        directly in `expired` with content still null (see
+        CurriculumUploadService._create_retroactive_expired_assessment,
+        whose generation is deferred to first access) — `status` alone
+        can't tell those apart, this can."""
+        return self.assessment_text is not None or self.part1_text is not None
 
     # ── Relationships ─────────────────────────────────────────────────────────
     curriculum: Mapped["Curriculum"] = relationship(

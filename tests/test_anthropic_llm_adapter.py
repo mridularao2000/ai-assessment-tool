@@ -19,11 +19,16 @@ import anthropic
 import httpx
 import pytest
 
-from app.adapters.anthropic_llm import AnthropicLLMAdapter
+from app.adapters.anthropic_llm import (
+    WEB_FETCH_TOOL,
+    WEB_SEARCH_TOOL,
+    AnthropicLLMAdapter,
+)
 from app.interfaces.llm import (
     AssessmentGenerationRequest,
     CurriculumAnalysisRequest,
     GradingRequest,
+    LLMToolBudgetExceededError,
     LLMUnavailableError,
     LLMValidationError,
     MidtermGenerationRequest,
@@ -57,10 +62,18 @@ def adapter(monkeypatch):
     get_settings.cache_clear()
 
 
-def _fake_response(text: str) -> MagicMock:
-    """Build a fake anthropic.Message with one text content block."""
+def _fake_response(text: str, input_tokens: int = 100, output_tokens: int = 200) -> MagicMock:
+    """Build a fake anthropic.Message with one text content block and real
+    integer usage figures — needed since _CallBudget does real arithmetic
+    on usage.input_tokens/output_tokens (a bare MagicMock default there
+    would silently break its int comparisons rather than emulate real
+    SDK behavior, where usage is always present and numeric)."""
     msg = MagicMock()
     msg.content = [MagicMock(type="text", text=text)]
+    msg.usage = MagicMock(
+        input_tokens=input_tokens, output_tokens=output_tokens,
+        cache_creation_input_tokens=0, cache_read_input_tokens=0,
+    )
     return msg
 
 
@@ -297,6 +310,255 @@ class TestRetryLogic:
         second_prompt = mock.call_args_list[1][1]["messages"][0]["content"]
         assert "STOP calling tools" not in first_prompt
         assert "STOP calling tools" in second_prompt
+
+
+# ── Regression tests for the 2026-08-30 runaway-spend fix ─────────────────────
+# Root cause: a tool-budget-exhaustion failure (LLMValidationError: "No text
+# block in response content") was retried up to llm_max_retries (3) times on
+# tool-enabled paths, each retry re-running the full (then-16-round) tool-use
+# cycle — and in two real incidents, every retry failed identically. The fix
+# has three independent layers, each tested below: (1) a lower tool
+# round-trip cap, (2) a tighter attempt cap specifically for tool-enabled
+# calls, (3) a circuit breaker on cumulative spend across attempts.
+
+
+class TestToolRoundTripCap:
+    """Layer 1: bound the cost of a single attempt directly, not just how
+    many times an expensive attempt gets repeated."""
+
+    def test_web_search_max_uses_is_capped_low(self):
+        assert WEB_SEARCH_TOOL["max_uses"] <= 3
+
+    def test_web_fetch_max_uses_is_capped_low(self):
+        assert WEB_FETCH_TOOL["max_uses"] <= 4
+
+    def test_combined_tool_round_trip_budget_is_in_4_to_6_range(self):
+        total = WEB_SEARCH_TOOL["max_uses"] + WEB_FETCH_TOOL["max_uses"]
+        assert 4 <= total <= 6
+
+
+class TestToolPathAttemptCap:
+    """Layer 2: tool-enabled calls get fewer total attempts than the
+    general schema-mismatch retry budget — both real incidents showed a
+    3rd blind repeat never once recovering a tool-budget failure."""
+
+    def _bad_json(self) -> str:
+        return "not json at all"
+
+    def _good_assessment_json(self) -> str:
+        return json.dumps({
+            "assessment_text": "text", "rubric": "rubric", "duration_minutes": 60,
+        })
+
+    def test_tool_enabled_call_makes_at_most_2_attempts(self, adapter):
+        """3 bad responses queued, but a tool-enabled call must stop after
+        2 — proving it doesn't reach for the 3rd even though settings.
+        llm_max_retries is 3 and a 3rd response is available."""
+        req = AssessmentGenerationRequest(
+            topic="Python", curriculum_content="notes",
+            prompt_template_body="Generate for {topic} using {curriculum_content}{resource_guidance}",
+            resources=["https://example.com/docs"],
+        )
+        mock = _patch_create(adapter, self._bad_json(), self._bad_json(), self._bad_json())
+        with pytest.raises(LLMValidationError):
+            adapter.generate_assessment(req)
+        assert mock.call_count == 2
+
+    def test_non_tool_call_still_gets_full_3_attempts(self, adapter):
+        """The tighter cap is scoped to tool-enabled calls only — a request
+        with no resources (no tools attached) must be unaffected."""
+        req = AssessmentGenerationRequest(
+            topic="Python", curriculum_content="notes",
+            prompt_template_body="Generate for {topic} using {curriculum_content}{resource_guidance}",
+            resources=[],
+        )
+        mock = _patch_create(adapter, self._bad_json(), self._bad_json(), self._bad_json())
+        with pytest.raises(LLMValidationError):
+            adapter.generate_assessment(req)
+        assert mock.call_count == 3
+
+    def test_grade_midterm_submission_tool_enabled_makes_at_most_2_attempts(self, adapter):
+        """Confirms the cap applies to grade_midterm_submission too — the
+        one grading path that IS tool-enabled, unlike grade_submission."""
+        req = MidtermGradingRequest(
+            part1_text="p1", part1_rubric="r1", part2_text="p2", part2_rubric="r2",
+            part1_max_marks=30.0, part2_max_marks=70.0,
+            part1_submission_content="a1", part2_submission_content="a2",
+            prompt_template_body="{part1_text}{part1_rubric}{part2_text}{part2_rubric}"
+                                  "{part1_max_marks}{part2_max_marks}"
+                                  "{part1_submission_content}{part2_submission_content}"
+                                  "{resource_guidance}{readme_content}",
+            resources=["https://github.com/example/repo"],
+        )
+        mock = _patch_create(adapter, self._bad_json(), self._bad_json(), self._bad_json())
+        with pytest.raises(LLMValidationError):
+            adapter.grade_midterm_submission(req)
+        assert mock.call_count == 2
+
+
+class TestCircuitBreaker:
+    """Layer 3: defense-in-depth. Even within the 2-attempt cap, if the
+    first attempt alone already spent at/above the ceiling, the second
+    attempt must abort WITHOUT making another API call."""
+
+    def _bad_json(self) -> str:
+        return "not json at all"
+
+    def _good_assessment_json(self) -> str:
+        return json.dumps({
+            "assessment_text": "text", "rubric": "rubric", "duration_minutes": 60,
+        })
+
+    def test_second_attempt_skipped_when_first_attempt_exceeds_ceiling(self, adapter, monkeypatch):
+        monkeypatch.setenv("LLM_TOOL_CALL_BUDGET_TOKENS", "1000")
+        from app.config import get_settings
+        get_settings.cache_clear()
+        adapter2 = AnthropicLLMAdapter()  # picks up the lowered ceiling
+
+        req = AssessmentGenerationRequest(
+            topic="Python", curriculum_content="notes",
+            prompt_template_body="Generate for {topic} using {curriculum_content}{resource_guidance}",
+            resources=["https://example.com/docs"],
+        )
+        # First (and only, if the breaker works) call spends 5000 tokens —
+        # already over the 1000-token ceiling — and fails validation.
+        big_response = _fake_response(self._bad_json(), input_tokens=4000, output_tokens=1000)
+        mock = MagicMock(return_value=big_response)
+        adapter2._client.messages.create = mock
+
+        with pytest.raises(LLMValidationError, match="Circuit breaker"):
+            adapter2.generate_assessment(req)
+
+        assert mock.call_count == 1  # the would-be 2nd attempt never made a real API call
+        get_settings.cache_clear()
+
+    def test_stays_under_ceiling_gets_normal_second_attempt(self, adapter, monkeypatch):
+        """Sanity check the breaker isn't over-triggering: a small first
+        failure well under the ceiling must still get its normal retry."""
+        monkeypatch.setenv("LLM_TOOL_CALL_BUDGET_TOKENS", "1_000_000".replace("_", ""))
+        from app.config import get_settings
+        get_settings.cache_clear()
+        adapter2 = AnthropicLLMAdapter()
+
+        req = AssessmentGenerationRequest(
+            topic="Python", curriculum_content="notes",
+            prompt_template_body="Generate for {topic} using {curriculum_content}{resource_guidance}",
+            resources=["https://example.com/docs"],
+        )
+        mock = _patch_create(adapter2, self._bad_json(), self._good_assessment_json())
+        result = adapter2.generate_assessment(req)
+
+        assert result.assessment_text == "text"
+        assert mock.call_count == 2
+        get_settings.cache_clear()
+
+
+# ── Regression tests for the 2026-08-30 (second incident) code_execution fix ──
+# Root cause, confirmed from the raw captured response, not assumed: a
+# *successful* single tool-enabled attempt still cost 316k input tokens,
+# even with the max_uses caps above in place and correctly enforced (2
+# web_search + 3 web_fetch calls, exactly at the caps). The actual driver was
+# the model repeatedly re-printing fetched page content across 19
+# code_execution rounds — code_execution is available as a side effect of
+# using web_search_20260209/web_fetch_20260209 (Anthropic's own docs: these
+# versions "use code execution internally"), not something this file ever
+# declared. Fix: allowed_callers=["direct"] on both tools, closing that
+# avenue at its source, plus a lower max_content_tokens as a backstop.
+
+
+class TestCodeExecutionCallerRestriction:
+    """Layer 4: prevent web_search/web_fetch from being invoked through a
+    code_execution sandbox at all, rather than trying to separately cap a
+    tool (code_execution) this file never declares."""
+
+    def test_web_search_restricted_to_direct_callers(self):
+        assert WEB_SEARCH_TOOL["allowed_callers"] == ["direct"]
+
+    def test_web_fetch_restricted_to_direct_callers(self):
+        assert WEB_FETCH_TOOL["allowed_callers"] == ["direct"]
+
+    def test_web_fetch_max_uses_lowered_to_2(self):
+        # Was 3 — the 3rd call in the incident was a same-URL retry after
+        # the model's own code hit a TypeError, not a genuine 3rd resource.
+        assert WEB_FETCH_TOOL["max_uses"] == 2
+
+    def test_web_fetch_max_content_tokens_lowered(self):
+        # Was 20000 — shrinks the raw content available to be re-injected
+        # into context, independent of whether allowed_callers alone fully
+        # closes the code_execution avenue.
+        assert WEB_FETCH_TOOL["max_content_tokens"] <= 8000
+
+
+class TestToolBudgetExceededErrorType:
+    """Exhausting a tool-enabled path's attempts must raise the specific
+    LLMToolBudgetExceededError (a LLMValidationError subclass) — not the
+    plain base class — so send_assessment_job can distinguish "this
+    generation is expensive and keeps failing the same way" from an
+    ordinary one-off schema mismatch, and route it to needs_manual_
+    diagnosis instead of a silent automatic retry."""
+
+    def _bad_json(self) -> str:
+        return "not json at all"
+
+    def _good_assessment_json(self) -> str:
+        return json.dumps({
+            "assessment_text": "text", "rubric": "rubric", "duration_minutes": 60,
+        })
+
+    def test_tool_enabled_exhaustion_raises_specific_subclass(self, adapter):
+        req = AssessmentGenerationRequest(
+            topic="Python", curriculum_content="notes",
+            prompt_template_body="Generate for {topic} using {curriculum_content}{resource_guidance}",
+            resources=["https://example.com/docs"],
+        )
+        _patch_create(adapter, self._bad_json(), self._bad_json())
+        with pytest.raises(LLMToolBudgetExceededError) as exc_info:
+            adapter.generate_assessment(req)
+        assert exc_info.value.attempts_made == 2
+        assert exc_info.value.tokens_spent > 0
+        assert exc_info.value.ceiling == adapter._tool_call_budget_tokens
+
+    def test_non_tool_exhaustion_raises_plain_validation_error_not_subclass(self, adapter):
+        """The tighter exception type is scoped to tool-enabled (budgeted)
+        call sites only — a plain schema-mismatch exhaustion on a
+        non-tool-enabled call must NOT be the new subclass, since there's
+        no tool budget involved and no reason to route it to manual
+        diagnosis instead of the normal failure handling."""
+        req = AssessmentGenerationRequest(
+            topic="Python", curriculum_content="notes",
+            prompt_template_body="Generate for {topic} using {curriculum_content}{resource_guidance}",
+            resources=[],
+        )
+        _patch_create(adapter, self._bad_json(), self._bad_json(), self._bad_json())
+        with pytest.raises(LLMValidationError) as exc_info:
+            adapter.generate_assessment(req)
+        assert not isinstance(exc_info.value, LLMToolBudgetExceededError)
+
+    def test_diagnostic_message_names_tool_round_counts(self, adapter):
+        """The exception's own message must be enough to diagnose the
+        failure without re-running anything — tool names and round counts,
+        not a raw content dump."""
+        response = MagicMock()
+        response.content = [
+            MagicMock(type="server_tool_use", name="web_search"),
+            MagicMock(type="server_tool_use", name="web_search"),
+            MagicMock(type="web_fetch_tool_result"),
+        ]
+        response.usage = MagicMock(
+            input_tokens=500, output_tokens=100,
+            cache_creation_input_tokens=0, cache_read_input_tokens=0,
+        )
+        req = AssessmentGenerationRequest(
+            topic="Python", curriculum_content="notes",
+            prompt_template_body="Generate for {topic} using {curriculum_content}{resource_guidance}",
+            resources=["https://example.com/docs"],
+        )
+        adapter._client.messages.create = MagicMock(return_value=response)
+        with pytest.raises(LLMToolBudgetExceededError) as exc_info:
+            adapter.generate_assessment(req)
+        message = str(exc_info.value)
+        assert "web_search" in message
+        assert "2" in message  # 2 web_search rounds counted
 
 
 # ── analyze_curriculum ────────────────────────────────────────────────────────

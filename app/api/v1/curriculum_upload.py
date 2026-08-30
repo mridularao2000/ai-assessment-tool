@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from app.dependencies import get_assessment_service, get_curriculum_upload_service, get_email_service
 from app.exceptions import CurriculumUploadValidationError, InvalidStateError, NotFoundError
 from app.interfaces.email import EmailDeliveryError
+from app.interfaces.llm import LLMUnavailableError, LLMValidationError
 from app.models._utils import utcnow
 from app.models.curriculum import Curriculum
 from app.schemas.curriculum_upload import (
@@ -279,6 +280,19 @@ def trigger_late_send(
         raise HTTPException(status_code=404, detail=str(exc))
     except InvalidStateError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+    except LLMValidationError as exc:
+        raise HTTPException(
+            status_code=503, detail=f"Assessment generation failed after all retries: {exc}"
+        )
+    except LLMUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Claude API unavailable: {exc}. If this is a billing/rate-limit "
+                "error, check your Anthropic console balance before retrying — "
+                "each retry re-attempts a full (expensive, tool-using) generation."
+            ),
+        )
     except EmailDeliveryError as exc:
         raise HTTPException(status_code=502, detail=f"Email send failed: {exc}")
     except NotImplementedError as exc:

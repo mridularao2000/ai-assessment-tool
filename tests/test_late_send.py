@@ -230,3 +230,52 @@ class TestRouteErrorMapping:
             route(curriculum.id, _svc(db), EmailService(db, _UnconfiguredEmailAdapter()))
         assert exc_info.value.status_code == 503
         assert "not configured" in exc_info.value.detail
+
+    def _entry_no_content(self, db):
+        """Content deliberately ungenerated, unlike _entry() above — forces
+        trigger_late_send() to actually call the LLM instead of skipping
+        straight to the email send."""
+        seed_prompt_templates(db)
+        curriculum = make_curriculum(db)
+        assessment, _ = make_assessment(db, curriculum, status=AssessmentStatus.expired, due_offset_days=-2)
+        assessment.assessment_text = None
+        db.commit()
+        LateTokenService(db).grant_monthly(None)
+        return curriculum
+
+    def test_llm_validation_error_maps_to_503(self, db):
+        from app.api.v1.curriculum_upload import trigger_late_send as route
+        from app.interfaces.llm import LLMValidationError
+
+        class _BrokenLLM(FakeLLM):
+            def generate_assessment(self, req):
+                raise LLMValidationError("model returned invalid JSON after 3 retries")
+
+        curriculum = self._entry_no_content(db)
+        with pytest.raises(HTTPException) as exc_info:
+            route(
+                curriculum.id,
+                AssessmentService(db, _BrokenLLM()),
+                EmailService(db, RecordingEmailAdapter()),
+            )
+        assert exc_info.value.status_code == 503
+        assert "invalid JSON" in exc_info.value.detail
+
+    def test_llm_unavailable_error_maps_to_503_with_billing_hint(self, db):
+        from app.api.v1.curriculum_upload import trigger_late_send as route
+        from app.interfaces.llm import LLMUnavailableError
+
+        class _BrokenLLM(FakeLLM):
+            def generate_assessment(self, req):
+                raise LLMUnavailableError("Claude API error 402: insufficient credit balance")
+
+        curriculum = self._entry_no_content(db)
+        with pytest.raises(HTTPException) as exc_info:
+            route(
+                curriculum.id,
+                AssessmentService(db, _BrokenLLM()),
+                EmailService(db, RecordingEmailAdapter()),
+            )
+        assert exc_info.value.status_code == 503
+        assert "insufficient credit balance" in exc_info.value.detail
+        assert "billing" in exc_info.value.detail.lower()
