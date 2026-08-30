@@ -49,47 +49,69 @@
     .nav-pills .nav-link { font-weight: 600; }
     .nav-pills .nav-link.active { background-color: #0d6efd; }
 
-    /* View Entries table: Bootstrap's .table-responsive already makes
-       this scroll horizontally — overflow-x was never the problem. What
-       was missing is any hint that there's more to see (native scrollbars
-       are invisible-until-dragged on most platforms) and a way to keep
-       the one column you always need for context — topic — in view while
-       scrolling through the rest. */
-    .entries-scroll {
-      overflow-x: auto;
-      border-radius: 6px;
-      background-color: #fff;
-      /* CSS-only edge shadows that fade in only when there's actually
-         unscrolled content on that side — no scroll-event JS needed.
-         Two solid-fade covers (local, scroll with content) sit under two
-         fixed shadows (scroll, pinned to the viewport edges); the covers
-         hide whichever shadow has nothing left to hint at. */
-      background-image:
-        linear-gradient(to right, #fff 30%, rgba(255,255,255,0)),
-        linear-gradient(to left, #fff 30%, rgba(255,255,255,0)),
-        linear-gradient(to right, rgba(0,0,0,.15), rgba(0,0,0,0) 100%),
-        linear-gradient(to left, rgba(0,0,0,.15), rgba(0,0,0,0) 100%);
-      background-position: left center, right center, left center, right center;
-      background-repeat: no-repeat;
-      background-size: 32px 100%, 32px 100%, 12px 100%, 12px 100%;
-      background-attachment: local, local, scroll, scroll;
-    }
-    .entries-scroll::-webkit-scrollbar { height: 10px; }
-    .entries-scroll::-webkit-scrollbar-track { background: #e9ecef; border-radius: 6px; }
-    .entries-scroll::-webkit-scrollbar-thumb { background: #adb5bd; border-radius: 6px; }
-    .entries-scroll::-webkit-scrollbar-thumb:hover { background: #868e96; }
-    .entries-scroll { scrollbar-width: thin; scrollbar-color: #adb5bd #e9ecef; }
+    /* View Entries: one card per entry, stacked vertically — replaced a
+       wide horizontally-scrolling table (see git history). With enough
+       rows, that table's own horizontal scrollbar sat below the fold,
+       forcing scroll-down-then-scroll-right just to reach the one action
+       (Send late exam / Submit project) usually squeezed into its last,
+       often off-screen, column. Every field here wraps instead of
+       scrolling, so nothing is ever off to the side. */
+    .entries-list { display: flex; flex-direction: column; gap: 10px; }
 
-    .entries-table { margin-bottom: 0; }
-    .entries-table th:first-child,
-    .entries-table td:first-child {
-      position: sticky;
-      left: 0;
-      z-index: 2;
+    .entry-card {
+      border: 1px solid #dee2e6;
+      border-radius: 8px;
+      padding: 14px 16px;
       background: #fff;
-      box-shadow: 2px 0 4px rgba(0,0,0,.08);
     }
-    .entries-table thead th:first-child { z-index: 3; background: #f8f9fa; }
+
+    .entry-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      flex-wrap: wrap;
+      gap: 8px 12px;
+    }
+    .entry-card-topic { font-weight: 600; }
+
+    .entry-card-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 16px;
+      color: #6c757d;
+      font-size: 0.82rem;
+      margin-top: 6px;
+    }
+
+    .entry-card-id {
+      font-family: ui-monospace, "Cascadia Code", monospace;
+      font-size: 0.72rem;
+      color: #adb5bd;
+      margin-top: 4px;
+    }
+
+    /* The one thing on this card that actually needs the person's
+       attention (late-eligible or a held midterm) — set apart from the
+       routine "Edit" action below it, not one more button in the same row. */
+    .entry-card-urgent {
+      margin-top: 10px;
+      padding: 10px 12px;
+      border-radius: 6px;
+      background: #fff3cd;
+      border: 1px solid #ffe69c;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px 12px;
+    }
+
+    .entry-card-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
   </style>
 </head>
 <body>
@@ -117,7 +139,7 @@
       <button class="nav-link" id="tab-curriculum-btn" data-bs-toggle="pill"
               data-bs-target="#pane-curriculum" type="button" role="tab"
               aria-controls="pane-curriculum" aria-selected="false">
-        Curriculum Upload
+        Explore Curriculum
       </button>
     </li>
   </ul>
@@ -998,17 +1020,9 @@ async function viewEntries() {
     return;
   }
 
-  const rows = data.entries.map(en => renderEntryRow(en)).join('');
+  const cards = data.entries.map(en => renderEntryCard(en)).join('');
 
-  box.innerHTML = `
-    <div class="entries-scroll">
-      <table class="table table-sm align-middle entries-table">
-        <thead>
-          <tr><th>Topic</th><th>ID</th><th>Type</th><th>Chapter</th><th>Due</th><th>Marks</th><th>Status</th><th></th></tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>`;
+  box.innerHTML = `<div class="entries-list">${cards}</div>`;
 }
 
 function statusBadgeClass(status) {
@@ -1020,47 +1034,59 @@ function statusBadgeClass(status) {
   return 'text-bg-secondary'; // Not Yet Due
 }
 
-function renderEntryRow(en) {
+function renderEntryCard(en) {
   const held = en.resources_hold && en.pending_completion && en.pending_completion.length > 0;
   const lateEligible = en.status.startsWith('Missed — Late-Eligible');
 
-  const mainRow = `
-    <tr>
-      <td>${escapeHtml(en.topic)}</td>
-      <td class="font-monospace small">${escapeHtml(en.id)}</td>
-      <td><span class="badge text-bg-secondary">${escapeHtml(en.entry_type)}</span></td>
-      <td>${escapeHtml(en.chapter_label)}</td>
-      <td>${escapeHtml(en.completion_date)}</td>
-      <td>${en.max_marks}</td>
-      <td><span class="badge ${statusBadgeClass(en.status)}">${escapeHtml(en.status)}</span></td>
-      <td class="text-nowrap">
-        <button type="button" class="btn btn-sm btn-outline-primary" onclick="editEntry('${en.id}')">Edit →</button>
-        ${held ? `<button type="button" class="btn btn-sm btn-outline-warning ms-1" onclick="toggleProjectSubmit('${en.id}')">Submit project ▾</button>` : ''}
-        ${lateEligible ? `<button type="button" class="btn btn-sm btn-outline-danger ms-1" onclick="triggerLateSend('${en.id}')" id="late-send-btn-${en.id}" data-label="Send late exam">Send late exam</button>` : ''}
-        ${lateEligible ? `<div id="late-send-result-${en.id}" class="response-box small mt-1"></div>` : ''}
-      </td>
-    </tr>`;
+  const urgentBanner = !held && !lateEligible ? '' : `
+    <div class="entry-card-urgent">
+      <span class="small fw-semibold">
+        ${held ? '⏸ Project resources needed before this exam can open' : '⏰ Missed — still recoverable with a late-submission token'}
+      </span>
+      <div class="d-flex gap-2 flex-wrap">
+        ${held ? `<button type="button" class="btn btn-sm btn-warning" onclick="toggleProjectSubmit('${en.id}')">Submit project ▾</button>` : ''}
+        ${lateEligible ? `<button type="button" class="btn btn-sm btn-danger" onclick="triggerLateSend('${en.id}')" id="late-send-btn-${en.id}" data-label="Send late exam">Send late exam</button>` : ''}
+      </div>
+    </div>
+    ${lateEligible ? `<div id="late-send-result-${en.id}" class="response-box small mt-2"></div>` : ''}`;
 
-  if (!held) return mainRow;
+  const card = `
+    <div class="entry-card">
+      <div class="entry-card-header">
+        <div class="entry-card-topic">${escapeHtml(en.topic)}</div>
+        <span class="badge ${statusBadgeClass(en.status)}">${escapeHtml(en.status)}</span>
+      </div>
+      <div class="entry-card-meta">
+        <span class="badge text-bg-secondary">${escapeHtml(en.entry_type)}</span>
+        <span>${escapeHtml(en.chapter_label)}</span>
+        <span>Due ${escapeHtml(en.completion_date)}</span>
+        <span>${en.max_marks} marks</span>
+      </div>
+      <div class="entry-card-id">ID: ${escapeHtml(en.id)}</div>
+      ${urgentBanner}
+      <div class="entry-card-actions">
+        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="editEntry('${en.id}')">Edit →</button>
+      </div>
+    </div>`;
 
-  return mainRow + `
-    <tr id="project-submit-${en.id}" class="d-none">
-      <td colspan="8">
-        <div class="p-3 my-2 border border-warning-subtle rounded bg-warning-subtle bg-opacity-25">
-          <h6 class="mb-1">Submit completed project</h6>
-          <p class="text-muted small mb-3">
-            This midterm's exam window stays held until every field below is filled in —
-            filling them all opens it.
-          </p>
-          ${en.pending_completion.map(slot => renderPendingField(en.id, slot)).join('')}
-          <button type="button" class="btn btn-primary btn-sm" onclick="submitProjectResources('${en.id}')"
-                  id="project-submit-btn-${en.id}" data-label="Submit">
-            Submit
-          </button>
-          <div id="project-submit-result-${en.id}" class="response-box"></div>
-        </div>
-      </td>
-    </tr>`;
+  if (!held) return card;
+
+  return card + `
+    <div id="project-submit-${en.id}" class="d-none">
+      <div class="p-3 mb-2 border border-warning-subtle rounded bg-warning-subtle bg-opacity-25">
+        <h6 class="mb-1">Submit completed project</h6>
+        <p class="text-muted small mb-3">
+          This midterm's exam window stays held until every field below is filled in —
+          filling them all opens it.
+        </p>
+        ${en.pending_completion.map(slot => renderPendingField(en.id, slot)).join('')}
+        <button type="button" class="btn btn-primary btn-sm" onclick="submitProjectResources('${en.id}')"
+                id="project-submit-btn-${en.id}" data-label="Submit">
+          Submit
+        </button>
+        <div id="project-submit-result-${en.id}" class="response-box"></div>
+      </div>
+    </div>`;
 }
 
 async function triggerLateSend(entryId) {
@@ -1103,10 +1129,10 @@ function renderPendingField(entryId, slot) {
 }
 
 function refreshEntriesIfLoaded() {
-  // Only re-fetch if the table has actually been shown at least once —
+  // Only re-fetch if the list has actually been shown at least once —
   // otherwise Add/Update Entry would trigger a pointless request for a
   // section the user hasn't opened yet.
-  if (document.getElementById('viewEntriesResult').querySelector('table')) {
+  if (document.getElementById('viewEntriesResult').querySelector('.entries-list')) {
     viewEntries();
   }
 }
