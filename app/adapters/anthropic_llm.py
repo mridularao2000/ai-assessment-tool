@@ -9,6 +9,31 @@ import anthropic
 
 logger = logging.getLogger(__name__)
 
+# USD per million tokens — Claude Sonnet 4.6 standard (non-batch) API
+# pricing, verified 2026-08-30 against Anthropic's published rates, not
+# recalled from training data (see the 2026-08-30 credit-usage report this
+# was added for). Cache-write rate is the 5-minute-TTL price; this codebase
+# never sets a 1-hour TTL. For an estimate only, logged alongside every
+# call — the Anthropic console remains the authoritative source for actual
+# billed cost.
+_PRICE_PER_MTOK_INPUT = 3.00
+_PRICE_PER_MTOK_OUTPUT = 15.00
+_PRICE_PER_MTOK_CACHE_WRITE = 3.75
+_PRICE_PER_MTOK_CACHE_READ = 0.30
+
+
+def _estimate_cost_usd(usage: Any) -> float:
+    input_tok = getattr(usage, "input_tokens", 0) or 0
+    output_tok = getattr(usage, "output_tokens", 0) or 0
+    cache_write_tok = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    cache_read_tok = getattr(usage, "cache_read_input_tokens", 0) or 0
+    return (
+        input_tok / 1_000_000 * _PRICE_PER_MTOK_INPUT
+        + output_tok / 1_000_000 * _PRICE_PER_MTOK_OUTPUT
+        + cache_write_tok / 1_000_000 * _PRICE_PER_MTOK_CACHE_WRITE
+        + cache_read_tok / 1_000_000 * _PRICE_PER_MTOK_CACHE_READ
+    )
+
 from app.adapters.nonfetchable_resources import build_resource_guidance
 from app.config import get_settings
 from app.interfaces.llm import (
@@ -22,6 +47,7 @@ from app.interfaces.llm import (
     LLMUnavailableError,
     LLMValidationError,
     MidtermGenerationRequest,
+    current_llm_log_context,
     MidtermGenerationResult,
     MidtermGradingRequest,
     MidtermGradingResult,
@@ -199,12 +225,13 @@ class AnthropicLLMAdapter:
                 if budget is not None:
                     budget.charge(spent)
                 logger.info(
-                    "Anthropic call: model=%s input_tokens=%s output_tokens=%s "
-                    "cache_creation_input_tokens=%s cache_read_input_tokens=%s tools=%s",
-                    self._model, usage.input_tokens, usage.output_tokens,
+                    "Anthropic call: context=%s model=%s input_tokens=%s "
+                    "output_tokens=%s cache_creation_input_tokens=%s "
+                    "cache_read_input_tokens=%s tools=%s est_cost_usd=%.4f",
+                    current_llm_log_context(), self._model, usage.input_tokens, usage.output_tokens,
                     getattr(usage, "cache_creation_input_tokens", None),
                     getattr(usage, "cache_read_input_tokens", None),
-                    bool(tools),
+                    bool(tools), _estimate_cost_usd(usage),
                 )
             return self._extract_text(message.content)
         except (anthropic.APITimeoutError, anthropic.APIConnectionError) as exc:

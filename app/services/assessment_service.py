@@ -14,6 +14,7 @@ from app.interfaces.llm import (
     MidtermGenerationRequest,
     MidtermRetestGenerationRequest,
     RetestGenerationRequest,
+    llm_log_context,
 )
 from app.models._utils import utcnow
 from app.models.assessment import Assessment, AssessmentStatus
@@ -124,13 +125,14 @@ class AssessmentService:
 
         prompt_template = self._fetch_prompt("assessment_generation")
 
-        result = self.llm.generate_assessment(
-            AssessmentGenerationRequest(
-                topic=curriculum.topic,
-                curriculum_content=curriculum.extracted_content or "",
-                prompt_template_body=prompt_template.body,
+        with llm_log_context(f"curriculum={curriculum.id} topic={curriculum.topic!r} attempt=1 (first attempt)"):
+            result = self.llm.generate_assessment(
+                AssessmentGenerationRequest(
+                    topic=curriculum.topic,
+                    curriculum_content=curriculum.extracted_content or "",
+                    prompt_template_body=prompt_template.body,
+                )
             )
-        )
 
         scheduled_at = self._calculate_scheduled_at(curriculum.target_completion_date)
         reminder_at, due_date = self._build_dates(scheduled_at)
@@ -202,17 +204,21 @@ class AssessmentService:
             prompt_template = self._fetch_prompt("retest_generation")
             resources = [r.source_ref for r in curriculum.resources] if is_entry else None
 
-            result = self.llm.generate_retest(
-                RetestGenerationRequest(
-                    topic=curriculum.topic,
-                    curriculum_content=curriculum.extracted_content or "",
-                    prompt_template_body=prompt_template.body,
-                    previous_mastery_score=grade.mastery_score,
-                    weak_areas=grade.weak_areas or [],
-                    attempt_number=previous_attempt + 1,
-                    resources=resources,
+            with llm_log_context(
+                f"curriculum={curriculum.id} topic={curriculum.topic!r} "
+                f"attempt={previous_attempt + 1} (retest)"
+            ):
+                result = self.llm.generate_retest(
+                    RetestGenerationRequest(
+                        topic=curriculum.topic,
+                        curriculum_content=curriculum.extracted_content or "",
+                        prompt_template_body=prompt_template.body,
+                        previous_mastery_score=grade.mastery_score,
+                        weak_areas=grade.weak_areas or [],
+                        attempt_number=previous_attempt + 1,
+                        resources=resources,
+                    )
                 )
-            )
 
             scheduled_at = self._calculate_scheduled_at(curriculum.target_completion_date)
             if is_entry:
@@ -257,22 +263,26 @@ class AssessmentService:
         prompt_template = self._fetch_prompt("midterm_retest_generation")
         cumulative_pool_content, own_resources, readme_content = self._assemble_midterm_pool(curriculum)
 
-        result = self.llm.generate_midterm_retest(
-            MidtermRetestGenerationRequest(
-                topic=curriculum.topic,
-                cumulative_pool_content=cumulative_pool_content,
-                own_resources=own_resources,
-                probe_focus=detail.probe_focus,
-                part1_max_marks=detail.part1_max_marks,
-                part2_max_marks=detail.part2_max_marks,
-                previous_part1_score=grade.part1_score or 0.0,
-                previous_part2_score=grade.part2_score or 0.0,
-                weak_areas=grade.weak_areas or [],
-                attempt_number=previous_attempt + 1,
-                prompt_template_body=prompt_template.body,
-                readme_content=readme_content,
+        with llm_log_context(
+            f"curriculum={curriculum.id} topic={curriculum.topic!r} "
+            f"attempt={previous_attempt + 1} (midterm retest)"
+        ):
+            result = self.llm.generate_midterm_retest(
+                MidtermRetestGenerationRequest(
+                    topic=curriculum.topic,
+                    cumulative_pool_content=cumulative_pool_content,
+                    own_resources=own_resources,
+                    probe_focus=detail.probe_focus,
+                    part1_max_marks=detail.part1_max_marks,
+                    part2_max_marks=detail.part2_max_marks,
+                    previous_part1_score=grade.part1_score or 0.0,
+                    previous_part2_score=grade.part2_score or 0.0,
+                    weak_areas=grade.weak_areas or [],
+                    attempt_number=previous_attempt + 1,
+                    prompt_template_body=prompt_template.body,
+                    readme_content=readme_content,
+                )
             )
-        )
 
         scheduled_at = self._calculate_scheduled_at(curriculum.target_completion_date)
         reminder_at, due_date = _build_entry_dates(scheduled_at)
@@ -355,14 +365,18 @@ class AssessmentService:
         prompt_template = self._fetch_prompt("assessment_generation")
         resources = [r.source_ref for r in curriculum.resources]
 
-        result = self.llm.generate_assessment(
-            AssessmentGenerationRequest(
-                topic=curriculum.topic,
-                curriculum_content=curriculum.extracted_content or "",
-                prompt_template_body=prompt_template.body,
-                resources=resources,
+        with llm_log_context(
+            f"assessment={assessment.id} curriculum={curriculum.id} "
+            f"topic={curriculum.topic!r} (send-time generation)"
+        ):
+            result = self.llm.generate_assessment(
+                AssessmentGenerationRequest(
+                    topic=curriculum.topic,
+                    curriculum_content=curriculum.extracted_content or "",
+                    prompt_template_body=prompt_template.body,
+                    resources=resources,
+                )
             )
-        )
         assessment.assessment_text = result.assessment_text
         assessment.rubric = result.rubric
         assessment.duration_minutes = result.duration_minutes
@@ -384,18 +398,22 @@ class AssessmentService:
         prompt_template = self._fetch_prompt("midterm_generation")
         cumulative_pool_content, own_resources, readme_content = self._assemble_midterm_pool(curriculum)
 
-        result = self.llm.generate_midterm(
-            MidtermGenerationRequest(
-                topic=curriculum.topic,
-                cumulative_pool_content=cumulative_pool_content,
-                own_resources=own_resources,
-                probe_focus=detail.probe_focus,
-                part1_max_marks=detail.part1_max_marks,
-                part2_max_marks=detail.part2_max_marks,
-                prompt_template_body=prompt_template.body,
-                readme_content=readme_content,
+        with llm_log_context(
+            f"assessment={assessment.id} curriculum={curriculum.id} "
+            f"topic={curriculum.topic!r} (send-time midterm generation)"
+        ):
+            result = self.llm.generate_midterm(
+                MidtermGenerationRequest(
+                    topic=curriculum.topic,
+                    cumulative_pool_content=cumulative_pool_content,
+                    own_resources=own_resources,
+                    probe_focus=detail.probe_focus,
+                    part1_max_marks=detail.part1_max_marks,
+                    part2_max_marks=detail.part2_max_marks,
+                    prompt_template_body=prompt_template.body,
+                    readme_content=readme_content,
+                )
             )
-        )
         assessment.part1_text = result.part1_text
         assessment.part1_rubric = result.part1_rubric
         assessment.part2_text = result.part2_text

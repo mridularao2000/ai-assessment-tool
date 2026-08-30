@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.config import get_settings
 from app.exceptions import IngestionError, InvalidStateError, NotFoundError
-from app.interfaces.llm import GradingRequest, LLMInterface, MidtermGradingRequest
+from app.interfaces.llm import GradingRequest, LLMInterface, MidtermGradingRequest, llm_log_context
 from app.models.assessment import Assessment, AssessmentStatus
 from app.models.curriculum import Curriculum, CurriculumEntryType
 from app.models.grade import Grade
@@ -118,15 +118,19 @@ class GradingService:
             if prompt_template is None:
                 raise NotFoundError("No active 'grading' prompt template found.")
 
-            grading_result = self.llm.grade_submission(
-                GradingRequest(
-                    assessment_text=assessment.assessment_text or "",
-                    rubric=assessment.rubric or "",
-                    curriculum_content=curriculum.extracted_content or "",
-                    submission_content=submission_content,
-                    prompt_template_body=prompt_template.body,
+            with llm_log_context(
+                f"assessment={assessment.id} curriculum={curriculum.id} "
+                f"topic={curriculum.topic!r} (grading)"
+            ):
+                grading_result = self.llm.grade_submission(
+                    GradingRequest(
+                        assessment_text=assessment.assessment_text or "",
+                        rubric=assessment.rubric or "",
+                        curriculum_content=curriculum.extracted_content or "",
+                        submission_content=submission_content,
+                        prompt_template_body=prompt_template.body,
+                    )
                 )
-            )
 
             is_entry = curriculum.entry_type is not None
             score_earned = (
@@ -189,21 +193,25 @@ class GradingService:
             else:
                 resources.append(value)
 
-        grading_result = self.llm.grade_midterm_submission(
-            MidtermGradingRequest(
-                part1_text=assessment.part1_text or "",
-                part1_rubric=assessment.part1_rubric or "",
-                part2_text=assessment.part2_text or "",
-                part2_rubric=assessment.part2_rubric or "",
-                part1_max_marks=detail.part1_max_marks,
-                part2_max_marks=detail.part2_max_marks,
-                part1_submission_content=submission.part1_text_content or "",
-                part2_submission_content=part2_content,
-                prompt_template_body=prompt_template.body,
-                resources=resources,
-                readme_content=readme_content,
+        with llm_log_context(
+            f"assessment={assessment.id} curriculum={curriculum.id} "
+            f"topic={curriculum.topic!r} (midterm grading)"
+        ):
+            grading_result = self.llm.grade_midterm_submission(
+                MidtermGradingRequest(
+                    part1_text=assessment.part1_text or "",
+                    part1_rubric=assessment.part1_rubric or "",
+                    part2_text=assessment.part2_text or "",
+                    part2_rubric=assessment.part2_rubric or "",
+                    part1_max_marks=detail.part1_max_marks,
+                    part2_max_marks=detail.part2_max_marks,
+                    part1_submission_content=submission.part1_text_content or "",
+                    part2_submission_content=part2_content,
+                    prompt_template_body=prompt_template.body,
+                    resources=resources,
+                    readme_content=readme_content,
+                )
             )
-        )
 
         max_marks = curriculum.max_marks or (detail.part1_max_marks + detail.part2_max_marks)
         score_earned = grading_result.part1_score + grading_result.part2_score

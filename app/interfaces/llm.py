@@ -11,8 +11,39 @@ The implementing class (e.g. AnthropicLLMAdapter) is responsible for:
 """
 from __future__ import annotations
 
+import contextvars
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Literal, Optional, Protocol
+from typing import Iterator, Literal, Optional, Protocol
+
+# ── Cross-cutting call-logging context ──────────────────────────────────────
+# "Which curriculum entry triggered this LLM call" — a contextvar rather
+# than threading a new parameter through every Request dataclass and every
+# LLMInterface method, since this is pure observability with no effect on
+# behavior. Callers (assessment_service.py, grading_service.py,
+# curriculum_service.py) wrap an llm.* call with llm_log_context(...); the
+# implementing adapter reads current_llm_log_context() when logging.
+# Defaults to "(no context set)" so a call site that forgets to set it is
+# visibly unlabeled in logs rather than silently blank.
+_log_context: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "_llm_log_context", default="(no context set)"
+)
+
+
+@contextmanager
+def llm_log_context(label: str) -> Iterator[None]:
+    """Tag every LLM call log line made within this block with `label`
+    (e.g. f"curriculum={curriculum.id} topic={curriculum.topic!r}")."""
+    token = _log_context.set(label)
+    try:
+        yield
+    finally:
+        _log_context.reset(token)
+
+
+def current_llm_log_context() -> str:
+    """Read the current tag set by the nearest enclosing llm_log_context()."""
+    return _log_context.get()
 
 # ── Category type ─────────────────────────────────────────────────────────────
 # Literal union of all valid reschedule categories.

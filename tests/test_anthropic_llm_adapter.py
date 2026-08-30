@@ -23,6 +23,7 @@ from app.adapters.anthropic_llm import (
     WEB_FETCH_TOOL,
     WEB_SEARCH_TOOL,
     AnthropicLLMAdapter,
+    _estimate_cost_usd,
 )
 from app.interfaces.llm import (
     AssessmentGenerationRequest,
@@ -36,6 +37,7 @@ from app.interfaces.llm import (
     MidtermRetestGenerationRequest,
     RescheduleClassificationRequest,
     RetestGenerationRequest,
+    llm_log_context,
 )
 
 
@@ -559,6 +561,94 @@ class TestToolBudgetExceededErrorType:
         message = str(exc_info.value)
         assert "web_search" in message
         assert "2" in message  # 2 web_search rounds counted
+
+
+# ── Regression tests: per-call cost estimate + curriculum-entry log tagging ───
+# Added 2026-08-30 in response to a direct question: production had zero
+# per-call cost/curriculum visibility (raw token counts only, no dollar
+# estimate, no way to tell which curriculum entry a given call belonged to).
+
+
+class TestCostEstimate:
+    def _usage(self, input_tokens=0, output_tokens=0, cache_creation=0, cache_read=0):
+        return MagicMock(
+            input_tokens=input_tokens, output_tokens=output_tokens,
+            cache_creation_input_tokens=cache_creation, cache_read_input_tokens=cache_read,
+        )
+
+    def test_matches_hand_computed_cost_for_the_incident_call(self):
+        # The exact usage figures from the 2026-08-30 316k-token incident
+        # call — $3/MTok in, $15/MTok out, verified pricing.
+        usage = self._usage(input_tokens=316322, output_tokens=16578)
+        cost = _estimate_cost_usd(usage)
+        expected = 316322 / 1_000_000 * 3.00 + 16578 / 1_000_000 * 15.00
+        assert cost == pytest.approx(expected)
+        assert 1.10 < cost < 1.30  # sanity: matches the ~$1.20 reported figure
+
+    def test_zero_usage_is_zero_cost(self):
+        assert _estimate_cost_usd(self._usage()) == 0.0
+
+    def test_cache_read_is_cheaper_than_fresh_input(self):
+        fresh = _estimate_cost_usd(self._usage(input_tokens=1000))
+        cached = _estimate_cost_usd(self._usage(cache_read=1000))
+        assert cached < fresh
+
+    def test_cache_write_is_more_expensive_than_fresh_input(self):
+        fresh = _estimate_cost_usd(self._usage(input_tokens=1000))
+        cache_write = _estimate_cost_usd(self._usage(cache_creation=1000))
+        assert cache_write > fresh
+
+
+class TestLogContextTagging:
+    def _good_json(self) -> str:
+        return json.dumps({
+            "assessment_text": "text", "rubric": "rubric", "duration_minutes": 60,
+        })
+
+    def test_log_line_includes_the_active_context_label(self, adapter, caplog):
+        req = AssessmentGenerationRequest(
+            topic="Python", curriculum_content="notes",
+            prompt_template_body="Generate for {topic} using {curriculum_content}",
+        )
+        _patch_create(adapter, self._good_json())
+        with caplog.at_level("INFO"):
+            with llm_log_context("curriculum=abc-123 topic='Python' (test)"):
+                adapter.generate_assessment(req)
+        assert any("curriculum=abc-123" in r.message for r in caplog.records)
+
+    def test_log_line_shows_placeholder_when_no_context_set(self, adapter, caplog):
+        req = AssessmentGenerationRequest(
+            topic="Python", curriculum_content="notes",
+            prompt_template_body="Generate for {topic} using {curriculum_content}",
+        )
+        _patch_create(adapter, self._good_json())
+        with caplog.at_level("INFO"):
+            adapter.generate_assessment(req)
+        assert any("(no context set)" in r.message for r in caplog.records)
+
+    def test_context_does_not_leak_across_calls(self, adapter, caplog):
+        """The contextvar must be reset on exit — a call made after the
+        `with` block must NOT still show the earlier label."""
+        req = AssessmentGenerationRequest(
+            topic="Python", curriculum_content="notes",
+            prompt_template_body="Generate for {topic} using {curriculum_content}",
+        )
+        _patch_create(adapter, self._good_json(), self._good_json())
+        with caplog.at_level("INFO"):
+            with llm_log_context("curriculum=first"):
+                adapter.generate_assessment(req)
+            adapter.generate_assessment(req)
+        assert not any("curriculum=first" in r.message for r in caplog.records[1:])
+
+    def test_log_line_includes_est_cost_usd(self, adapter, caplog):
+        req = AssessmentGenerationRequest(
+            topic="Python", curriculum_content="notes",
+            prompt_template_body="Generate for {topic} using {curriculum_content}",
+        )
+        _patch_create(adapter, self._good_json())
+        with caplog.at_level("INFO"):
+            adapter.generate_assessment(req)
+        assert any("est_cost_usd=" in r.message for r in caplog.records)
 
 
 # ── analyze_curriculum ────────────────────────────────────────────────────────

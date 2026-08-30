@@ -28,7 +28,7 @@ from typing import Optional
 from sqlalchemy.orm import Session, joinedload
 
 from app.exceptions import IngestionError, InvalidStateError, NotFoundError
-from app.interfaces.llm import CurriculumAnalysisRequest, LLMError, LLMInterface
+from app.interfaces.llm import CurriculumAnalysisRequest, LLMError, LLMInterface, llm_log_context
 from app.models._utils import utcnow
 from app.models.curriculum import Curriculum, CurriculumStatus
 from app.models.prompt_template import PromptTemplate
@@ -160,13 +160,14 @@ class CurriculumService:
         curriculum.status = CurriculumStatus.analyzing
         try:
             template = self._fetch_prompt("curriculum_analysis")
-            analysis = self.llm.analyze_curriculum(
-                CurriculumAnalysisRequest(
-                    topic=topic,
-                    curriculum_content=curriculum.extracted_content,
-                    prompt_template_body=template.body,
+            with llm_log_context(f"curriculum={curriculum.id} topic={topic!r} (curriculum analysis)"):
+                analysis = self.llm.analyze_curriculum(
+                    CurriculumAnalysisRequest(
+                        topic=topic,
+                        curriculum_content=curriculum.extracted_content,
+                        prompt_template_body=template.body,
+                    )
                 )
-            )
             curriculum.extracted_content += (
                 f"\n\n=== CURRICULUM ANALYSIS ===\n"
                 f"Summary: {analysis.summary}\n"
