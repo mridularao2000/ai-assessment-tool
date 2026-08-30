@@ -10,6 +10,7 @@ concrete `_send(to, subject, body_html)` implementation differs.
 from __future__ import annotations
 
 import html
+from collections import defaultdict
 from datetime import date, datetime
 
 from app.interfaces.email import (
@@ -197,36 +198,54 @@ class HtmlEmailBodyMixin:
         )
 
     def send_syllabus_email(self, data: SyllabusEmailData) -> None:
-        chapter_sections = ""
+        """Renders a chronological, month-sectioned reading of the upload —
+        every Assessment and Midterm sorted by completion_date ascending
+        and bucketed under the month it falls in — rather than a chapter-
+        by-chapter data dump. Chapter grouping (SyllabusChapterSection)
+        stays the underlying data shape only because the transcript email's
+        frozen course_material_snapshot (serialize_syllabus_content) still
+        needs it; this method simply reads across chapters/midterms and
+        re-sorts for display, without touching that shared data.
+        """
+        due_badge = (
+            "background:#fff3cd;color:#7a5b00;font-size:0.78rem;font-weight:700;"
+            "padding:3px 10px;border-radius:4px;white-space:nowrap"
+        )
+        window_badge = (
+            "background:#e6f9f0;color:#0f7b4f;font-size:0.78rem;font-weight:700;"
+            "padding:3px 10px;border-radius:4px;white-space:nowrap"
+        )
+
+        no_standalone = [
+            (chapter.chapter_label, chapter.no_standalone_note)
+            for chapter in data.chapters
+            if not chapter.assessments
+        ]
+
+        dated_cards: list[tuple[date, str]] = []
+
         for chapter in data.chapters:
-            if chapter.assessments:
-                rows = "".join(
-                    f"""
-    <div style="margin:10px 0;padding:10px 14px;background:#f8f9fa;border-radius:4px">
-      <strong>{_e(a.topic)}</strong>
-      <div style="color:#6c757d;font-size:0.85rem;margin:4px 0">
-        Completion: {_e(_fmt_date(a.completion_date))} &middot;
-        Exam window: {_e(_fmt_date(a.window_start))} – {_e(_fmt_date(a.window_end))}
+            for a in chapter.assessments:
+                resources_html = "".join(f"<li>{_e(r)}</li>" for r in a.resources)
+                card = f"""
+    <div style="margin:12px 0;padding:12px 16px;background:#f8f9fa;border-left:4px solid #0d6efd;
+                border-radius:4px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
+        <strong>{_e(a.topic)}</strong>
+        <span style="background:#e7f1ff;color:#0d6efd;font-size:0.72rem;font-weight:700;
+                     padding:2px 9px;border-radius:12px;white-space:nowrap">{_e(chapter.chapter_label)}</span>
       </div>
-      <div style="color:#868e96;font-size:0.75rem;font-family:ui-monospace,'Cascadia Code',monospace;margin:2px 0 6px">
+      <div style="margin:9px 0 6px;display:flex;gap:8px;flex-wrap:wrap">
+        <span style="{due_badge}">Due {_e(_fmt_date(a.completion_date))}</span>
+        <span style="{window_badge}">Exam window: {_e(_fmt_date(a.window_start))} – {_e(_fmt_date(a.window_end))}</span>
+      </div>
+      <div style="color:#868e96;font-size:0.72rem;font-family:ui-monospace,'Cascadia Code',monospace;margin:4px 0 8px">
         ID: {_e(a.id)}
       </div>
-      <ul style="margin:6px 0 0 0;padding-left:20px;line-height:1.6">
-        {''.join(f'<li>{_e(r)}</li>' for r in a.resources)}
-      </ul>
+      <ul style="margin:6px 0 0 0;padding-left:20px;line-height:1.6">{resources_html}</ul>
     </div>"""
-                    for a in chapter.assessments
-                )
-            else:
-                rows = f"""
-    <div style="margin:10px 0;padding:10px 14px;background:#fff3cd;border-radius:4px">
-      No standalone Assessment for this chapter. {_e(chapter.no_standalone_note or '')}
-    </div>"""
-            chapter_sections += f"""
-  <h3 style="color:#0d6efd;margin-bottom:6px">{_e(chapter.chapter_label)}</h3>
-  {rows}"""
+                dated_cards.append((a.completion_date, card))
 
-        midterm_sections = ""
         for m in data.midterms:
             known_now_html = "".join(f"<li>{_e(r)}</li>" for r in m.known_now)
 
@@ -240,7 +259,7 @@ class HtmlEmailBodyMixin:
 
             pending_html = "".join(_pending_row(label, filled) for label, filled in m.pending_status)
             hold_banner = (
-                f"""<div style="background:#f8d7da;color:#58151c;padding:8px 12px;
+                """<div style="background:#f8d7da;color:#58151c;padding:8px 12px;
                     border-radius:4px;margin-bottom:8px">Held — awaiting the resources above.</div>"""
                 if m.resources_hold else ""
             )
@@ -252,32 +271,70 @@ class HtmlEmailBodyMixin:
                 f"<p><strong>Probe focus:</strong> {_e(m.probe_focus)}</p>"
                 if m.probe_focus else ""
             )
-            midterm_sections += f"""
-  <div style="margin:16px 0;padding:14px 18px;border-left:4px solid #6610f2;background:#f8f9fa">
-    <h4 style="margin-top:0">{_e(m.topic)}</h4>
-    <p style="color:#6c757d;font-size:0.85rem">{_e(m.chapter_label)} &middot; Due {_e(_fmt_date(m.completion_date))}</p>
-    <p style="color:#868e96;font-size:0.75rem;font-family:ui-monospace,'Cascadia Code',monospace;margin:2px 0 8px">
-      ID: {_e(m.id)}
-    </p>
-    {hold_banner}
-    <strong>Known now:</strong>
-    <ul style="margin:4px 0 10px 0;padding-left:20px">{known_now_html}</ul>
-    <strong>Project resources:</strong>
-    <ul style="margin:4px 0 10px 0;padding-left:20px">{pending_html}</ul>
-    {probe_html}
-    {special_case_html}
+            card = f"""
+    <div style="margin:12px 0;padding:14px 18px;background:#f8f9fa;border-left:4px solid #6610f2;
+                border-radius:4px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
+        <strong>{_e(m.topic)}</strong>
+        <span style="background:#f1e6ff;color:#6610f2;font-size:0.72rem;font-weight:700;
+                     padding:2px 9px;border-radius:12px;white-space:nowrap">{_e(m.chapter_label)} · Midterm</span>
+      </div>
+      <div style="margin:9px 0 6px;display:flex;gap:8px;flex-wrap:wrap">
+        <span style="{due_badge}">Due {_e(_fmt_date(m.completion_date))}</span>
+      </div>
+      <div style="color:#868e96;font-size:0.72rem;font-family:ui-monospace,'Cascadia Code',monospace;margin:4px 0 8px">
+        ID: {_e(m.id)}
+      </div>
+      {hold_banner}
+      <strong>Known now:</strong>
+      <ul style="margin:4px 0 10px 0;padding-left:20px">{known_now_html}</ul>
+      <strong>Project resources:</strong>
+      <ul style="margin:4px 0 10px 0;padding-left:20px">{pending_html}</ul>
+      {probe_html}
+      {special_case_html}
+    </div>"""
+            dated_cards.append((m.completion_date, card))
+
+        dated_cards.sort(key=lambda pair: pair[0])
+
+        months: dict[tuple[int, int], list[str]] = defaultdict(list)
+        month_order: list[tuple[int, int]] = []
+        for d, card in dated_cards:
+            key = (d.year, d.month)
+            if key not in months:
+                month_order.append(key)
+            months[key].append(card)
+
+        timeline_html = ""
+        for key in month_order:
+            year, month = key
+            label = date(year, month, 1).strftime("%B %Y")
+            timeline_html += f"""
+  <h3 style="color:#495057;margin:26px 0 10px;padding-bottom:6px;border-bottom:2px solid #dee2e6;
+             text-transform:uppercase;letter-spacing:0.04em;font-size:0.9rem">{_e(label)}</h3>
+  {''.join(months[key])}"""
+
+        no_standalone_html = ""
+        if no_standalone:
+            items = "".join(
+                f"<li><strong>{_e(label)}</strong>{f' — {_e(note)}' if note else ''}</li>"
+                for label, note in no_standalone
+            )
+            no_standalone_html = f"""
+  <div style="margin:16px 0;padding:10px 14px;background:#fff3cd;border-radius:4px">
+    <strong>No standalone assessment:</strong>
+    <ul style="margin:6px 0 0 0;padding-left:20px;line-height:1.6">{items}</ul>
   </div>"""
 
         body = f"""
 <div style="font-family:sans-serif;color:#212529;max-width:680px;margin:0 auto;padding:24px">
   <h2 style="margin-top:0">Your Curriculum: {_e(data.source_filename)}</h2>
-  <p style="color:#6c757d">Uploaded curriculum, organized by chapter.</p>
+  <p style="color:#6c757d">Uploaded curriculum, arranged chronologically by due date.</p>
   <p style="color:#868e96;font-size:0.75rem;font-family:ui-monospace,'Cascadia Code',monospace;margin:0 0 16px">
     Upload ID: {_e(data.upload_id)}
   </p>
-  {chapter_sections}
-  <h3 style="color:#6610f2;margin-top:28px">Midterms</h3>
-  {midterm_sections}
+  {no_standalone_html}
+  {timeline_html}
 </div>"""
         self._send(data.recipient_emails, f"Your Curriculum: {data.source_filename}", body)
 

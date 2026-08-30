@@ -113,3 +113,8 @@ class LateSendResponse(BaseModel):
     curriculum_id: str
     assessment_id: str
     sent: bool = True
+
+
+class ResendSyllabusResponse(BaseModel):
+    upload_id: str
+    sent: bool = True

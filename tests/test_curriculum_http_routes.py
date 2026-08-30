@@ -151,3 +151,22 @@ class TestUploadCurriculumRoute:
         # the route body (and therefore CurriculumUploadService) ever runs.
         response = client.post("/api/v1/curriculum-uploads/")
         assert response.status_code == 422
+
+
+class TestResendSyllabusRoute:
+    def test_resend_sends_again_and_updates_timestamp(self, client, db):
+        seed_prompt_templates(db)
+        raw_bytes = FIXTURE_PATH.read_bytes()
+        upload_id = client.post(
+            "/api/v1/curriculum-uploads/",
+            files={"file": ("curriculum_seed.json", raw_bytes, "application/json")},
+        ).json()["upload_id"]
+
+        response = client.post(f"/api/v1/curriculum-uploads/{upload_id}/resend-syllabus")
+
+        assert response.status_code == 200
+        assert response.json() == {"upload_id": upload_id, "sent": True}
+
+    def test_unknown_upload_id_is_404(self, client):
+        response = client.post("/api/v1/curriculum-uploads/does-not-exist/resend-syllabus")
+        assert response.status_code == 404

@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from app.dependencies import get_assessment_service, get_curriculum_upload_service, get_email_service
 from app.exceptions import CurriculumUploadValidationError, InvalidStateError, NotFoundError
 from app.interfaces.email import EmailDeliveryError
+from app.models._utils import utcnow
 from app.models.curriculum import Curriculum
 from app.schemas.curriculum_upload import (
     AddEntryRequest,
@@ -20,6 +21,7 @@ from app.schemas.curriculum_upload import (
     PendingCompletionSlot,
     PendingResourcesResponse,
     PendingResourcesUpdate,
+    ResendSyllabusResponse,
     TranscriptChapterGroupResponse,
     TranscriptResponse,
     TranscriptRowResponse,
@@ -209,6 +211,33 @@ def update_entry(
         status=display_status(curriculum_upload_svc.db, curriculum),
         pending_completion=_pending_completion_list(curriculum),
     )
+
+
+@router.post("/{upload_id}/resend-syllabus", response_model=ResendSyllabusResponse)
+def resend_syllabus(
+    upload_id: str,
+    curriculum_upload_svc: Annotated[CurriculumUploadService, Depends(get_curriculum_upload_service)],
+    email_svc: Annotated[EmailService, Depends(get_email_service)],
+) -> ResendSyllabusResponse:
+    """Re-sends the syllabus email for an upload that already exists — e.g.
+    after a template/rendering change — without re-ingesting (which would
+    duplicate entries, tokens, and IDs)."""
+    try:
+        upload = curriculum_upload_svc.get_upload(upload_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    try:
+        email_svc.send_syllabus_email(upload_id)
+    except EmailDeliveryError as exc:
+        raise HTTPException(status_code=502, detail=f"Email send failed: {exc}")
+    except NotImplementedError as exc:
+        raise HTTPException(status_code=503, detail=f"Email provider is not configured: {exc}")
+
+    upload.syllabus_email_sent_at = utcnow()
+    curriculum_upload_svc.db.commit()
+
+    return ResendSyllabusResponse(upload_id=upload_id)
 
 
 @router.post("/{upload_id}/close", response_model=CloseUploadResponse)
