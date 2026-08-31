@@ -751,7 +751,13 @@ class CurriculumUploadService:
 
         Raises:
             NotFoundError: curriculum_id doesn't exist or isn't a midterm.
-            InvalidStateError: an unknown slot slug was supplied.
+            InvalidStateError: an unknown slot slug was supplied, or a
+                supplied value was blank/whitespace-only. A slot omitted
+                from `values` entirely is left untouched (partial fill);
+                a slot explicitly submitted with an empty value is
+                rejected rather than silently ignored, so a blank-form
+                submission can't look like it succeeded while writing
+                nothing.
         """
         curriculum = self.db.get(Curriculum, curriculum_id)
         if curriculum is None or curriculum.midterm_detail is None:
@@ -770,8 +776,14 @@ class CurriculumUploadService:
                     f"Unknown pending-resource slot {slug!r} for {curriculum_id!r}. "
                     f"Valid slots: {sorted(slots)}"
                 )
-            if value:
-                slots[slug] = value
+            stripped = value.strip()
+            if not stripped:
+                raise InvalidStateError(
+                    f"Pending-resource slot {slug!r} for {curriculum_id!r} was submitted "
+                    "with a blank value. Omit it to leave the existing value unchanged, "
+                    "or provide real content."
+                )
+            slots[slug] = stripped
         detail.pending_completion_slots = slots
         self.db.commit()
 
@@ -809,7 +821,10 @@ class CurriculumUploadService:
         detail = curriculum.midterm_detail
         if detail is None or not curriculum.resources_hold:
             return False
-        if not all(v is not None for v in detail.pending_completion_slots.values()):
+        # Truthy, not just "is not None" — fill_pending_resources() already
+        # rejects blank values, but this stays defense-in-depth so a slot
+        # can never read as "filled" from an empty string.
+        if not all(detail.pending_completion_slots.values()):
             return False
 
         today = date.today()

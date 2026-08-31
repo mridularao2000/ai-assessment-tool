@@ -1081,8 +1081,9 @@ function renderEntryCard(en) {
           filling them all opens it.
         </p>
         ${en.pending_completion.map(slot => renderPendingField(en.id, slot)).join('')}
+        <div id="project-submit-hint-${en.id}" class="small text-danger mb-2"></div>
         <button type="button" class="btn btn-primary btn-sm" onclick="submitProjectResources('${en.id}')"
-                id="project-submit-btn-${en.id}" data-label="Submit">
+                id="project-submit-btn-${en.id}" data-label="Submit" disabled>
           Submit
         </button>
         <div id="project-submit-result-${en.id}" class="response-box"></div>
@@ -1118,16 +1119,46 @@ function renderPendingField(entryId, slot) {
     return `
       <div class="mb-3">
         <label class="form-label" for="${fieldId}">${escapeHtml(slot.label)}</label>
-        <textarea class="form-control" id="${fieldId}" rows="6"
+        <textarea class="form-control" id="${fieldId}" rows="6" data-entry-id="${entryId}"
           placeholder="Describe your design decisions. For EACH claim, point to the specific file path and function that backs it up — e.g. &quot;see src/auth/token.py, function verify_token() — this is where token expiry is checked.&quot; Claims with no file/function reference can't be verified.">${escapeHtml(value)}</textarea>
       </div>`;
   }
   return `
     <div class="mb-3">
       <label class="form-label" for="${fieldId}">${escapeHtml(slot.label)}</label>
-      <input type="text" class="form-control font-monospace" id="${fieldId}" value="${escapeHtml(value)}">
+      <input type="text" class="form-control font-monospace" id="${fieldId}" value="${escapeHtml(value)}" data-entry-id="${entryId}">
     </div>`;
 }
+
+// Required-field guard for "Submit completed project": keeps Submit
+// disabled and names the missing field(s) until every pending slot has
+// real (non-whitespace) content. The backend independently rejects blank
+// values too (fill_pending_resources) — this is the convenience layer,
+// not the real guard.
+function updateProjectSubmitValidity(entryId) {
+  const prefix = `pc_${entryId}_`;
+  const fields = document.querySelectorAll(`[id^="${prefix}"]`);
+  const missing = [];
+  fields.forEach(el => {
+    if (!el.value.trim()) {
+      const label = el.previousElementSibling;
+      missing.push(label ? label.textContent : el.id);
+    }
+  });
+  const btn = document.getElementById(`project-submit-btn-${entryId}`);
+  const hint = document.getElementById(`project-submit-hint-${entryId}`);
+  if (btn) btn.disabled = missing.length > 0;
+  if (hint) {
+    hint.textContent = missing.length > 0
+      ? `Fill in all fields before submitting — missing: ${missing.join(', ')}`
+      : '';
+  }
+}
+
+document.addEventListener('input', (e) => {
+  const entryId = e.target.dataset && e.target.dataset.entryId;
+  if (entryId) updateProjectSubmitValidity(entryId);
+});
 
 function refreshEntriesIfLoaded() {
   // Only re-fetch if the list has actually been shown at least once —
@@ -1153,6 +1184,7 @@ setInterval(() => {
 
 function toggleProjectSubmit(entryId) {
   document.getElementById(`project-submit-${entryId}`).classList.toggle('d-none');
+  updateProjectSubmitValidity(entryId);
 }
 
 async function submitProjectResources(entryId) {

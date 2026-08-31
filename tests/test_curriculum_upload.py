@@ -480,6 +480,32 @@ class TestPendingResourcesPatch:
         with pytest.raises(NotFoundError):
             service.fill_pending_resources("does-not-exist", {"x": "y"})
 
+    def test_blank_value_is_rejected_not_silently_dropped(self, db, seed_raw):
+        """Regression: a blank-form submission (every field "") used to
+        silently no-op — 200-style success with nothing actually written,
+        resources_hold and every slot left untouched. It must now be
+        rejected so the caller (and the UI) can tell the difference
+        between "succeeded" and "nothing happened"."""
+        service = CurriculumUploadService(db, RecordingEmailAdapter(), _scheduler(db))
+        upload = service.ingest(seed_raw, "curriculum_seed.json")
+        LateTokenService(db).grant_monthly(upload.id)
+
+        db.expire_all()
+        pm_system = (
+            db.query(Curriculum)
+            .filter(Curriculum.upload_id == upload.id, Curriculum.topic.like("PM System%"))
+            .first()
+        )
+        slugs = list(pm_system.midterm_detail.pending_completion_slots)
+
+        with pytest.raises(InvalidStateError):
+            service.fill_pending_resources(pm_system.id, {slugs[0]: "", slugs[1]: "   "})
+
+        db.expire_all()
+        refreshed = db.get(Curriculum, pm_system.id)
+        assert refreshed.resources_hold is True
+        assert all(v is None for v in refreshed.midterm_detail.pending_completion_slots.values())
+
     def test_patch_endpoint_clears_hold(self, client, db, seed_raw):
         service = CurriculumUploadService(db, RecordingEmailAdapter(), _scheduler(db))
         upload = service.ingest(seed_raw, "curriculum_seed.json")
