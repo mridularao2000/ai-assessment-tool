@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
 from sqlalchemy.orm import Session, joinedload
@@ -36,18 +36,27 @@ def display_status(db: Session, curriculum: Curriculum) -> str:
     latest attempt's Assessment.status instead.
     """
     if curriculum.resources_hold:
-        # A held midterm's completion_date has already passed by
+        # A held midterm's completion_date has normally already passed by
         # construction (that's what set resources_hold — see
-        # CurriculumUploadService._create_entry). Same token-gated
-        # monthly window as an expired assessment: recoverable with a
-        # token within completion_date's calendar month (see
+        # CurriculumUploadService._create_entry). Same token-gated monthly
+        # window as an expired assessment: recoverable with a token within
+        # completion_date's calendar month (see
         # CurriculumUploadService.check_and_clear_hold), permanently
-        # unscoreable once that month has passed — reusing MISSED_NO_SCORE
-        # verbatim rather than a distinct label, since it's the exact same
-        # terminal state, not just a similar one.
-        now = datetime.utcnow()
+        # unscoreable once that month has passed without recovery — reusing
+        # MISSED_NO_SCORE verbatim rather than a distinct label, since it's
+        # the exact same terminal state, not just a similar one.
+        #
+        # BUT: target_completion_date can also be pushed into the FUTURE
+        # out-of-band (e.g. a manual date shift while resources are still
+        # pending) — that's still-held, not missed, regardless of which
+        # calendar month it lands in. Only a due date that has actually
+        # passed can ever be "missed"; a future month must never be treated
+        # as an expired one just because it doesn't match the current month.
+        today = date.today()
         due = curriculum.target_completion_date
-        if (due.year, due.month) != (now.year, now.month):
+        if due >= today:
+            return HELD
+        if (due.year, due.month) != (today.year, today.month):
             return MISSED_NO_SCORE
         return HELD
 

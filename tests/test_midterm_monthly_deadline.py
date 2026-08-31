@@ -148,6 +148,20 @@ class TestDisplayStatusAndDownstreamConsumers:
         curriculum = _held_midterm(db, upload, completion_date=last_month)
         assert display_status(db, curriculum) == MISSED_NO_SCORE
 
+    def test_held_with_completion_date_pushed_into_a_future_month_is_still_held(self, db):
+        """Regression: target_completion_date can be moved into the future
+        out-of-band (e.g. a manual reschedule while resources are still
+        pending) — the month-mismatch check must not treat a FUTURE month
+        the same as a past one. A held entry due next month is still
+        recoverable, not permanently missed, just because it isn't due
+        THIS month — that was the actual 2026-08-31 incident (PM System
+        moved from Aug 14 to Sep 5, still resources_hold=True, and the
+        transcript wrongly showed "Missed — No Score")."""
+        upload = _make_upload(db)
+        next_month = (date.today().replace(day=28) + timedelta(days=10)).replace(day=5)
+        curriculum = _held_midterm(db, upload, completion_date=next_month)
+        assert display_status(db, curriculum) == HELD
+
     def test_transcript_shows_permanently_missed_midterm_as_missed(self, db):
         upload = _make_upload(db)
         last_month = date.today().replace(day=1) - timedelta(days=1)
