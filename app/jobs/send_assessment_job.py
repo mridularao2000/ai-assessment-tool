@@ -60,7 +60,9 @@ def send_assessment_job(assessment_id: str) -> None:
             EmailService(db, _email).send_assessment_email(assessment_id)
 
             assessment = db.get(Assessment, assessment_id)
-            if assessment and assessment.status == AssessmentStatus.scheduled:
+            if assessment and assessment.status in (
+                AssessmentStatus.scheduled, AssessmentStatus.needs_manual_diagnosis
+            ):
                 assessment.status = AssessmentStatus.active
                 db.commit()
         except LLMToolBudgetExceededError as exc:
@@ -97,6 +99,23 @@ def send_assessment_job(assessment_id: str) -> None:
                 exc.tokens_spent, exc.attempts_made, exc.ceiling,
                 assessment_id, exc,
             )
+            try:
+                EmailService(db, _email).send_manual_diagnosis_alert_email(
+                    assessment_id,
+                    tokens_spent=exc.tokens_spent,
+                    attempts_made=exc.attempts_made,
+                    ceiling=exc.ceiling,
+                    diagnostic=str(exc),
+                )
+            except Exception:
+                # This is a best-effort alert on top of the logger.error
+                # above, which is the durable record either way — a failed
+                # notification must never mask the original budget-exceeded
+                # error being re-raised below.
+                logger.exception(
+                    "Failed to send needs_manual_diagnosis alert email for assessment %s",
+                    assessment_id,
+                )
             raise
         except Exception:
             # Release the claim so a genuine retry after a real failure

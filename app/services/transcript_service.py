@@ -23,6 +23,7 @@ EXAM_SENT = "Exam Sent"
 GRADED = "Graded"
 MISSED_NO_SCORE = "Missed — No Score"
 HELD = "Awaiting Resources (Held)"
+NEEDS_MANUAL_DIAGNOSIS = "Needs Manual Diagnosis"
 
 
 def display_status(db: Session, curriculum: Curriculum) -> str:
@@ -69,6 +70,17 @@ def display_status(db: Session, curriculum: Curriculum) -> str:
 
     if latest.status == AssessmentStatus.scheduled:
         return NOT_YET_DUE
+
+    if latest.status == AssessmentStatus.needs_manual_diagnosis:
+        # Distinct from EXAM_SENT below on purpose: nothing was ever
+        # generated or sent for this row (generation exhausted its
+        # tool-call budget before producing valid output — see
+        # send_assessment_job's LLMToolBudgetExceededError handler), so
+        # grouping it with "exam is out, grading not yet final" would be
+        # actively misleading — a real production incident (Performance
+        # Optimization I, 2026-08-31) where the transcript/entries UI
+        # showed "Exam Sent" for a row that was never sent at all.
+        return NEEDS_MANUAL_DIAGNOSIS
 
     # active, submitted, late_submitted — exam is out, grading not yet final.
     return EXAM_SENT

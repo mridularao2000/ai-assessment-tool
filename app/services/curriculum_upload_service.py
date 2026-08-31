@@ -385,17 +385,34 @@ class CurriculumUploadService:
         self.db.refresh(curriculum)
         return curriculum
 
+    _EDITABLE_ASSESSMENT_STATUSES = (
+        AssessmentStatus.scheduled,
+        # needs_manual_diagnosis means generation exhausted its tool-call
+        # budget WITHOUT ever producing valid output — no content exists
+        # on record for this row (see send_assessment_job's
+        # LLMToolBudgetExceededError handler), so there is nothing to
+        # corrupt by editing. Treating it as non-editable (the original
+        # behavior) blocked the one thing that actually fixes this state:
+        # a human editing the resource that's likely causing the tool
+        # loop to run away, then letting update_entry() delete this row
+        # and schedule_ready_entries() recreate a clean one. Real
+        # incident this covers: Performance Optimization I, 2026-08-31.
+        AssessmentStatus.needs_manual_diagnosis,
+    )
+
     def _is_editable(self, curriculum: Curriculum) -> bool:
         """True if this entry hasn't reached its exam window yet — no
         Assessment exists for it, or the sole Assessment is still
-        `scheduled` (job registered, content not yet generated, exam not
-        yet sent). Any attempt or grade on record means the exam was
-        already generated from this entry's current resources/dates, or a
-        submission already references it — editing now would silently
-        corrupt what's already on record, so update_entry() refuses it
-        outright rather than allowing it.
+        `scheduled` or `needs_manual_diagnosis` (in both cases, no real
+        content exists on record yet). Any attempt or grade on record
+        means the exam was already generated from this entry's current
+        resources/dates, or a submission already references it — editing
+        now would silently corrupt what's already on record, so
+        update_entry() refuses it outright rather than allowing it.
         """
-        return all(a.status == AssessmentStatus.scheduled for a in curriculum.assessments)
+        return all(
+            a.status in self._EDITABLE_ASSESSMENT_STATUSES for a in curriculum.assessments
+        )
 
     def update_entry(self, curriculum_id: str, updates: dict) -> Curriculum:
         """Edit an entry that hasn't reached its exam window yet.
@@ -471,6 +488,105 @@ class CurriculumUploadService:
         self.schedule_ready_entries()
         self.db.refresh(curriculum)
         return curriculum
+
+    def bulk_reschedule_entries(self, curriculum_ids: list[str], shift_days: int) -> list[Curriculum]:
+        """Shift due_date/scheduled_date forward for entries whose exam
+        window already closed (latest Assessment.status == expired) —
+        without regenerating already-generated content.
+
+        Deliberately the opposite case from update_entry(): that method
+        only allows editing an entry that HASN'T fired yet (status ==
+        scheduled), by deleting and recreating its Assessment row fresh.
+        This method is for the entry that already fired and was missed —
+        its content is real and already on record, so nothing is deleted
+        or regenerated. Only the schedule moves; assessment_text/rubric/
+        part1_text/part2_text are left exactly as they are. When the new
+        scheduled_at arrives, the normal send_assessment_job pipeline runs
+        and its own `if assessment_text is None and part1_text is None:
+        generate()` check finds content already there and skips straight
+        to (re)sending it — zero additional LLM cost, no new logic needed
+        for that half of the behavior.
+
+        Not exposed to the UI — no frontend action calls this. It exists
+        as a direct backend API for bulk-shifting a batch of missed
+        entries' deadlines at once.
+
+        Atomic across the whole batch: every curriculum_id is validated
+        before anything is written, so one invalid ID refuses the entire
+        call rather than partially rescheduling some of them.
+
+        Raises:
+            NotFoundError: any curriculum_id doesn't exist.
+            InvalidStateError: shift_days isn't positive, any entry
+                belongs to a closed upload, or any entry's latest
+                Assessment isn't currently `expired` (nothing on record
+                yet, still out and unmarked, held, or already graded —
+                none of those are what this method is for).
+        """
+        if shift_days <= 0:
+            raise InvalidStateError(f"shift_days must be a positive integer (got {shift_days}).")
+
+        to_update: list[tuple[Curriculum, Assessment]] = []
+        for curriculum_id in curriculum_ids:
+            curriculum = self.db.get(Curriculum, curriculum_id)
+            if curriculum is None:
+                raise NotFoundError(f"Curriculum entry {curriculum_id!r} not found.")
+            if curriculum.upload is not None and curriculum.upload.closed_at is not None:
+                raise InvalidStateError(
+                    f"Curriculum entry {curriculum_id!r} belongs to a closed curriculum "
+                    "and cannot be modified."
+                )
+            assessments = sorted(curriculum.assessments, key=lambda a: a.attempt_number)
+            latest = assessments[-1] if assessments else None
+            if latest is None or latest.status != AssessmentStatus.expired:
+                current = latest.status.value if latest else "no assessment yet"
+                raise InvalidStateError(
+                    f"Curriculum entry {curriculum_id!r} is not eligible for bulk "
+                    f"reschedule (latest assessment status: {current!r}) — only an "
+                    "entry whose exam already went out and was missed (status "
+                    "'expired') qualifies."
+                )
+            to_update.append((curriculum, latest))
+
+        updated: list[Curriculum] = []
+        for curriculum, assessment in to_update:
+            new_completion_date = curriculum.target_completion_date + timedelta(days=shift_days)
+            scheduled_at = calculate_scheduled_at(new_completion_date)
+            reminder_at, due_date = _build_entry_dates(scheduled_at)
+
+            curriculum.target_completion_date = new_completion_date
+
+            existing_job_ids = (
+                AssessmentJobIds(**assessment.scheduled_job_ids)
+                if assessment.scheduled_job_ids else None
+            )
+            if existing_job_ids is not None:
+                self.scheduler_service.reschedule_assessment(
+                    assessment_id=assessment.id,
+                    new_scheduled_at=scheduled_at,
+                    new_reminder_at=reminder_at,
+                    new_due_date=due_date,
+                    existing_job_ids=existing_job_ids,
+                )
+            else:
+                assessment.scheduled_at = scheduled_at
+                assessment.reminder_at = reminder_at
+                assessment.due_date = due_date
+                self.scheduler_service.schedule_assessment_jobs(
+                    assessment_id=assessment.id,
+                    scheduled_at=scheduled_at,
+                    reminder_at=reminder_at,
+                    due_date=due_date,
+                )
+
+            assessment.status = AssessmentStatus.scheduled
+            assessment.send_job_claimed_at = None
+            updated.append(curriculum)
+
+        self.db.commit()
+        for curriculum in updated:
+            self.db.refresh(curriculum)
+        return updated
 
     def close_upload(self, upload_id: str) -> CurriculumUpload:
         """Archive (soft-delete) a curriculum_upload — never hard-deleted,

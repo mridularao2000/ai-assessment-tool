@@ -106,6 +106,32 @@ class TestResendStuckAssessment:
         assert response.status_code == 404
 
 
+class TestResendFromNeedsManualDiagnosis:
+    """needs_manual_diagnosis is the one failure mode the 15-minute sweep
+    will never pick back up on its own (its query only matches
+    status == scheduled) — /resend must accept it too, since both the
+    sweep's log message and the alert email point a human here."""
+
+    def test_recovers_a_needs_manual_diagnosis_row(self, client, db, monkeypatch):
+        seed_prompt_templates(db)
+        _patch_job_infra(monkeypatch)
+        curriculum = make_curriculum(db, entry_type="assessment")
+        assessment = _make_scheduled_assessment(
+            db, curriculum, scheduled_at=datetime.utcnow() - timedelta(days=1)
+        )
+        assessment.status = AssessmentStatus.needs_manual_diagnosis
+        db.commit()
+
+        response = client.post(f"/api/v1/assessments/{assessment.id}/resend")
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "active"
+        db.expire_all()
+        refreshed = db.get(Assessment, assessment.id)
+        assert refreshed.status == AssessmentStatus.active
+        assert refreshed.assessment_text is not None
+
+
 class TestResendRouteErrorMapping:
     """A bare 500 with no detail is exactly what a real production resend
     attempt hit — the route called send_assessment_job with no exception

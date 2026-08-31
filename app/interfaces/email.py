@@ -118,6 +118,32 @@ class TranscriptEmailData:
 
 
 @dataclass
+class ManualDiagnosisEmailData:
+    """Data required to alert on an assessment moved to needs_manual_diagnosis
+    (see send_assessment_job's LLMToolBudgetExceededError handler) — a tool-
+    enabled generation exhausted its attempt budget and will NOT be retried
+    automatically (recheck_stuck_assessments_job's sweep only matches
+    status == scheduled), so this is the only signal a human gets."""
+
+    recipient_emails: list[str]
+    assessment_id: str
+    curriculum_id: str
+    topic: str
+    tokens_spent: int
+    attempts_made: int
+    ceiling: int
+    # str(LLMToolBudgetExceededError) — already contains the circuit
+    # breaker's own bounded diagnostic (tool-use round counts per tool
+    # name, plus a truncated sample of the last content block attempted,
+    # built in AnthropicLLMAdapter._extract_text). Reused verbatim, not
+    # re-derived, so a human reading this email has the same evidence a
+    # log line would have shown — often enough to spot which resource
+    # was mid-fetch when the budget ran out, though not a guaranteed
+    # clean attribution (the sample is a raw repr, truncated to 300 chars).
+    diagnostic: str
+
+
+@dataclass
 class MidtermHoldReminderEmailData:
     """Data required to send the "resources still missing" reminder for a
     Midterm whose completion_date has passed with pending_completion slots
@@ -167,3 +193,5 @@ class EmailInterface(Protocol):
     def send_transcript_email(self, data: TranscriptEmailData) -> None: ...
 
     def send_midterm_hold_reminder_email(self, data: MidtermHoldReminderEmailData) -> None: ...
+
+    def send_manual_diagnosis_alert_email(self, data: ManualDiagnosisEmailData) -> None: ...

@@ -118,3 +118,16 @@ class LateSendResponse(BaseModel):
 class ResendSyllabusResponse(BaseModel):
     upload_id: str
     sent: bool = True
+
+
+class BulkRescheduleRequest(BaseModel):
+    """Shift due_date/scheduled_date forward by shift_days for every listed
+    entry, without regenerating already-generated content. Only entries
+    whose latest assessment is currently 'expired' (missed) qualify — see
+    CurriculumUploadService.bulk_reschedule_entries."""
+    curriculum_ids: list[str]
+    shift_days: int
+
+
+class BulkRescheduleResponse(BaseModel):
+    updated: list[CurriculumEntrySummary]

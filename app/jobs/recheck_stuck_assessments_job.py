@@ -39,44 +39,37 @@ def recheck_stuck_assessments_job() -> None:
     a job that's legitimately still mid-flight (e.g. a slow LLM call) —
     only rows well past their scheduled_at get swept.
 
-    Bounded, not infinite: a retry only helps if the underlying cause is
-    transient. If it's persistent (bad credentials, insufficient API
-    credit, a broken prompt template), every 15-minute retry is a real,
-    billed LLM call that fails for the same reason, forever, with no one
-    necessarily noticing. Past settings.stuck_assessment_max_auto_retry_hours,
-    this stops calling the LLM for that row automatically and just logs
-    loudly instead — a human must resolve the real cause and use the manual
-    /resend endpoint once it's fixed.
+    No time-based give-up ceiling: there used to be one
+    (stuck_assessment_max_auto_retry_hours), added to stop repeated billed
+    LLM calls against a persistent failure. It's gone now because the
+    actually-expensive persistent-failure mode — a tool-enabled generation
+    that burns its full attempt budget every time — no longer reaches this
+    sweep at all: send_assessment_job catches LLMToolBudgetExceededError
+    and moves the row straight to needs_manual_diagnosis (excluded by the
+    status == scheduled filter below) before this job would ever retry it
+    again. Any failure that *does* stay `scheduled` is, by construction,
+    one that doesn't hit that budget ceiling, so retrying it every 15
+    minutes forever is bounded, not runaway — and a stuck row always
+    self-heals the moment its cause is fixed, with no silent permanent
+    give-up and no manual step required.
     """
     logger.info("Starting job: recheck_stuck_assessments")
     db = SessionLocal()
     try:
         settings = get_settings()
-        now = datetime.utcnow()
-        grace_cutoff = now - timedelta(minutes=settings.stuck_assessment_grace_minutes)
-        give_up_cutoff = now - timedelta(hours=settings.stuck_assessment_max_auto_retry_hours)
+        grace_cutoff = datetime.utcnow() - timedelta(minutes=settings.stuck_assessment_grace_minutes)
 
-        stuck = (
-            db.query(Assessment.id, Assessment.scheduled_at)
+        retry_ids = [
+            row[0]
+            for row in db.query(Assessment.id)
             .filter(
                 Assessment.status == AssessmentStatus.scheduled,
                 Assessment.scheduled_at < grace_cutoff,
             )
             .all()
-        )
-        retry_ids = [a_id for a_id, scheduled_at in stuck if scheduled_at >= give_up_cutoff]
-        gave_up_ids = [a_id for a_id, scheduled_at in stuck if scheduled_at < give_up_cutoff]
+        ]
     finally:
         db.close()
-
-    for assessment_id in gave_up_ids:
-        logger.error(
-            "Assessment %s has been stuck in 'scheduled' for over %s hours — giving up "
-            "automatic retries to avoid repeatedly spending real API credit on a likely-"
-            "persistent failure. Resolve the underlying cause, then use POST "
-            "/api/v1/assessments/%s/resend to recover it manually.",
-            assessment_id, settings.stuck_assessment_max_auto_retry_hours, assessment_id,
-        )
 
     if not retry_ids:
         return

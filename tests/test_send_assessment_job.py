@@ -5,9 +5,10 @@ Real incident this exists for: a tool-enabled generation that exhausts its
 attempt budget (LLMToolBudgetExceededError) used to fall into the same
 generic `except Exception` handling as any other failure — the row stayed
 `scheduled`, so recheck_stuck_assessments_job's 15-minute sweep would keep
-retrying it, re-paying for the same expensive, deterministic failure for up
-to stuck_assessment_max_auto_retry_hours before giving up. This asserts the
-row is instead moved to a distinct status the sweep never picks up.
+retrying it, re-paying for the same expensive, deterministic failure
+forever. This asserts the row is instead moved to a distinct status the
+sweep never picks up, and that a human is notified by email since the
+sweep will never surface it on its own.
 
 Fully mocked — FakeLLM subclass + TestSessionLocal — zero real
 Anthropic/email calls.
@@ -23,7 +24,13 @@ from app.interfaces.llm import LLMToolBudgetExceededError
 from app.jobs.send_assessment_job import send_assessment_job
 from app.models.assessment import Assessment, AssessmentStatus
 from app.utils.token_auth import generate_submission_token
-from tests.conftest import FakeLLM, TestSessionLocal, make_curriculum, seed_prompt_templates
+from tests.conftest import (
+    FakeLLM,
+    RecordingEmailAdapter,
+    TestSessionLocal,
+    make_curriculum,
+    seed_prompt_templates,
+)
 
 
 def _make_scheduled_assessment(db, curriculum, *, scheduled_at: datetime) -> Assessment:
@@ -127,6 +134,37 @@ class TestSendAssessmentJobToolBudgetExceeded:
 
         db.expire_all()
         assert db.get(Assessment, assessment.id).status == AssessmentStatus.needs_manual_diagnosis
+
+    def test_sends_manual_diagnosis_alert_email(self, db, monkeypatch):
+        """The sweep will never surface this row again on its own (its
+        query only matches status == scheduled) — the alert email is the
+        only automatic signal a human gets, so it must actually fire."""
+        seed_prompt_templates(db)
+        monkeypatch.setattr("app.jobs.send_assessment_job.SessionLocal", TestSessionLocal)
+        monkeypatch.setattr("app.jobs.send_assessment_job._llm", _BudgetExhaustedLLM())
+        recording = RecordingEmailAdapter()
+        monkeypatch.setattr("app.jobs.send_assessment_job._email", recording)
+        curriculum = make_curriculum(db, entry_type="assessment")
+        assessment = _make_scheduled_assessment(
+            db, curriculum, scheduled_at=datetime.utcnow() - timedelta(minutes=5)
+        )
+
+        with pytest.raises(LLMToolBudgetExceededError):
+            send_assessment_job(assessment.id)
+
+        assert len(recording.manual_diagnosis_calls) == 1
+        alert = recording.manual_diagnosis_calls[0]
+        assert alert.assessment_id == assessment.id
+        assert alert.curriculum_id == curriculum.id
+        assert alert.tokens_spent == 316322
+        assert alert.attempts_made == 2
+        # The circuit breaker's own diagnostic (tool round counts, last
+        # block sample) must reach the email verbatim, not be dropped or
+        # re-derived — this is what makes the alert actionable instead of
+        # just a status ping.
+        assert "web_search" in alert.diagnostic
+        assert "web_fetch" in alert.diagnostic
+        assert alert.ceiling == 200000
 
     def test_ordinary_failure_still_stays_scheduled_for_auto_retry(self, db, monkeypatch):
         """Scoping check: an ordinary (non-budget) failure must be

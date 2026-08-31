@@ -43,6 +43,7 @@ from app.database import get_db
 from app.interfaces.email import (
     AssessmentEmailData,
     EmailInterface,
+    ManualDiagnosisEmailData,
     MidtermHoldReminderEmailData,
     ReminderEmailData,
     ResultsEmailData,
@@ -89,6 +90,9 @@ class StubEmailAdapter:
         raise NotImplementedError("StubEmailAdapter: set GMAIL_ADDRESS/GMAIL_APP_PASSWORD to enable email.")
 
     def send_midterm_hold_reminder_email(self, data: MidtermHoldReminderEmailData) -> None:
+        raise NotImplementedError("StubEmailAdapter: set GMAIL_ADDRESS/GMAIL_APP_PASSWORD to enable email.")
+
+    def send_manual_diagnosis_alert_email(self, data: ManualDiagnosisEmailData) -> None:
         raise NotImplementedError("StubEmailAdapter: set GMAIL_ADDRESS/GMAIL_APP_PASSWORD to enable email.")
 
 

@@ -15,6 +15,7 @@ from datetime import date, datetime
 
 from app.interfaces.email import (
     AssessmentEmailData,
+    ManualDiagnosisEmailData,
     MidtermHoldReminderEmailData,
     ReminderEmailData,
     ResultsEmailData,
@@ -519,3 +520,50 @@ class HtmlEmailBodyMixin:
   </p>
 </div>"""
         self._send(data.recipient_emails, f"Midterm Held: {data.topic} — resources needed", body)
+
+    def send_manual_diagnosis_alert_email(self, data: ManualDiagnosisEmailData) -> None:
+        body = f"""
+<div style="font-family:sans-serif;color:#212529;max-width:660px;margin:0 auto;padding:24px">
+  <h2 style="color:#dc3545;margin-top:0">⚠ Needs Manual Diagnosis: {_e(data.topic)}</h2>
+  <p>
+    Generation for this assessment exhausted its tool-call attempt budget without producing
+    valid output — no exam was generated or sent. This is <strong>not</strong> a transient
+    failure, so it will not be retried automatically by the 15-minute recovery sweep, and it
+    will stay stuck exactly as-is until a human acts on it.
+  </p>
+  <table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:0.9rem">
+    <tr><td style="padding:4px 8px;color:#6c757d">Assessment ID</td>
+        <td style="padding:4px 8px"><code>{_e(data.assessment_id)}</code></td></tr>
+    <tr><td style="padding:4px 8px;color:#6c757d">Curriculum ID</td>
+        <td style="padding:4px 8px"><code>{_e(data.curriculum_id)}</code></td></tr>
+    <tr><td style="padding:4px 8px;color:#6c757d">Attempts made</td>
+        <td style="padding:4px 8px">{data.attempts_made}</td></tr>
+    <tr><td style="padding:4px 8px;color:#6c757d">Tokens spent</td>
+        <td style="padding:4px 8px">{data.tokens_spent:,} (ceiling {data.ceiling:,})</td></tr>
+  </table>
+  <p style="margin-bottom:6px"><strong>Diagnostic (from the circuit breaker's own bounded log —
+    tool-use round counts and a sample of the last thing attempted; often enough to spot the
+    resource that was mid-fetch when the budget ran out, though not a guaranteed clean
+    attribution):</strong></p>
+  <pre style="background:#212529;color:#f8f9fa;padding:12px 14px;border-radius:4px;
+              white-space:pre-wrap;word-break:break-word;font-size:0.8rem;line-height:1.5;
+              margin:0 0 16px">{_e(data.diagnostic)}</pre>
+  <p style="background:#f8d7da;padding:12px 16px;border-radius:4px;margin-bottom:12px">
+    Do not just retry — review the curriculum entry's resources above for one that's likely
+    unfetchable or unusually large, then edit it via
+    <code>PATCH /api/v1/curriculum-uploads/entries/{_e(data.curriculum_id)}</code>
+    (now editable in this status — the previous edit-lock incorrectly treated this the same
+    as an entry with real content already on record). That deletes this row and lets the
+    normal pipeline recreate a clean one.
+  </p>
+  <p style="color:#6c757d;font-size:0.85rem">
+    Editing the entry replaces this Assessment row with a fresh one, so the ID above stops
+    being valid — the new row will send automatically on its own schedule, or fetch the
+    entry again for its new ID to force it early via <code>POST /resend</code>.
+  </p>
+</div>"""
+        self._send(
+            data.recipient_emails,
+            f"Needs Manual Diagnosis: {data.topic}",
+            body,
+        )

@@ -9,6 +9,7 @@ from app.exceptions import NotFoundError
 from app.interfaces.email import (
     AssessmentEmailData,
     EmailInterface,
+    ManualDiagnosisEmailData,
     MidtermHoldReminderEmailData,
     ReminderEmailData,
     ResultsEmailData,
@@ -210,4 +211,33 @@ class EmailService:
             topic=curriculum.topic,
             completion_date=curriculum.target_completion_date,
             missing_labels=missing,
+        ))
+
+    def send_manual_diagnosis_alert_email(
+        self, assessment_id: str, *, tokens_spent: int, attempts_made: int, ceiling: int,
+        diagnostic: str,
+    ) -> None:
+        """Alert for an assessment moved to needs_manual_diagnosis — the one
+        failure mode the 15-minute self-healing sweep will never pick back
+        up on its own. Always goes to the account owner (user_email), not
+        the per-entry exam/results recipients — this is an operational
+        alert about the system requiring curriculum-data changes, not a
+        delivery in the assessment pipeline (in a single-user deployment
+        these are typically the same inbox anyway, but the role is what's
+        being addressed here, not the exam recipient).
+        """
+        assessment = self.db.get(Assessment, assessment_id)
+        if not assessment:
+            raise NotFoundError(f"Assessment {assessment_id!r} not found")
+
+        settings = get_settings()
+        self.email.send_manual_diagnosis_alert_email(ManualDiagnosisEmailData(
+            recipient_emails=[settings.user_email],
+            assessment_id=assessment_id,
+            curriculum_id=assessment.curriculum_id,
+            topic=assessment.curriculum.topic,
+            tokens_spent=tokens_spent,
+            attempts_made=attempts_made,
+            diagnostic=diagnostic,
+            ceiling=ceiling,
         ))

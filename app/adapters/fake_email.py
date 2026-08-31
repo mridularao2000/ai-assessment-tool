@@ -24,6 +24,7 @@ import logging
 
 from app.interfaces.email import (
     AssessmentEmailData,
+    ManualDiagnosisEmailData,
     MidtermHoldReminderEmailData,
     ReminderEmailData,
     ResultsEmailData,
@@ -55,4 +56,9 @@ class FakeEmailAdapter:
     def send_midterm_hold_reminder_email(self, data: MidtermHoldReminderEmailData) -> None:
         logger.info(
             "[FAKE_EMAIL] suppressed send_midterm_hold_reminder_email to %s", data.recipient_emails
+        )
+
+    def send_manual_diagnosis_alert_email(self, data: ManualDiagnosisEmailData) -> None:
+        logger.info(
+            "[FAKE_EMAIL] suppressed send_manual_diagnosis_alert_email to %s", data.recipient_emails
         )

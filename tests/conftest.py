@@ -134,6 +134,9 @@ class NoopEmailAdapter:
     def send_midterm_hold_reminder_email(self, data) -> None:
         pass
 
+    def send_manual_diagnosis_alert_email(self, data) -> None:
+        pass
+
 
 class RecordingEmailAdapter(NoopEmailAdapter):
     """Records every call instead of doing nothing, so tests can assert on
@@ -146,6 +149,7 @@ class RecordingEmailAdapter(NoopEmailAdapter):
         self.syllabus_calls = []
         self.transcript_calls = []
         self.hold_reminder_calls = []
+        self.manual_diagnosis_calls = []
 
     def send_assessment_email(self, data) -> None:
         self.assessment_calls.append(data)
@@ -164,6 +168,9 @@ class RecordingEmailAdapter(NoopEmailAdapter):
 
     def send_midterm_hold_reminder_email(self, data) -> None:
         self.hold_reminder_calls.append(data)
+
+    def send_manual_diagnosis_alert_email(self, data) -> None:
+        self.manual_diagnosis_calls.append(data)
 
 
 @pytest.fixture(autouse=True)

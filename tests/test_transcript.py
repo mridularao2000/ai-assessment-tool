@@ -24,7 +24,7 @@ from app.models.curriculum import CurriculumEntryType
 from app.models.curriculum_upload import CurriculumUpload
 from app.models.midterm_detail import MidtermDetail
 from app.services.email_service import EmailService
-from app.services.transcript_service import compute_transcript
+from app.services.transcript_service import NEEDS_MANUAL_DIAGNOSIS, compute_transcript, display_status
 from tests.conftest import (
     RecordingEmailAdapter,
     make_assessment,
@@ -75,6 +75,26 @@ class TestOnlyResolvedEntriesShown:
         assert content.chapter_groups == []
         assert content.resolved_count == 0
         assert content.total_entry_count == 2
+
+    def test_needs_manual_diagnosis_is_distinct_from_exam_sent_and_excluded(self, db):
+        """Real incident this covers: needs_manual_diagnosis used to fall
+        through display_status()'s catch-all into EXAM_SENT — showing
+        "Exam Sent" for a row where nothing was ever generated or sent at
+        all (Performance Optimization I, 2026-08-31). It must get its own
+        distinct label, and — same as Exam Sent — stay excluded from the
+        resolved-only transcript, since it isn't a final outcome."""
+        upload = _make_upload(db)
+        curriculum = make_curriculum(db, entry_type=CurriculumEntryType.assessment)
+        curriculum.upload_id, curriculum.max_marks, curriculum.chapter_label = (
+            upload.id, 50.0, "Chapter 6 — X",
+        )
+        db.commit()
+        make_assessment(db, curriculum, status=AssessmentStatus.needs_manual_diagnosis)
+
+        assert display_status(db, curriculum) == NEEDS_MANUAL_DIAGNOSIS
+        content = compute_transcript(db, upload.id)
+        assert content.resolved_count == 0
+        assert content.chapter_groups == []
 
     def test_graded_entry_is_shown(self, db):
         upload = _make_upload(db)

@@ -13,6 +13,8 @@ from app.models._utils import utcnow
 from app.models.curriculum import Curriculum
 from app.schemas.curriculum_upload import (
     AddEntryRequest,
+    BulkRescheduleRequest,
+    BulkRescheduleResponse,
     CloseUploadResponse,
     CurriculumEntrySummary,
     CurriculumUploadDetailResponse,
@@ -212,6 +214,38 @@ def update_entry(
         status=display_status(curriculum_upload_svc.db, curriculum),
         pending_completion=_pending_completion_list(curriculum),
     )
+
+
+@router.post("/entries/bulk-reschedule", response_model=BulkRescheduleResponse)
+def bulk_reschedule_entries(
+    body: BulkRescheduleRequest,
+    curriculum_upload_svc: Annotated[CurriculumUploadService, Depends(get_curriculum_upload_service)],
+) -> BulkRescheduleResponse:
+    """Not linked from the UI — a direct backend API for shifting the
+    due_date/scheduled_date of a batch of missed ('expired') entries
+    forward by shift_days, without regenerating their already-generated
+    content. See CurriculumUploadService.bulk_reschedule_entries."""
+    try:
+        curricula = curriculum_upload_svc.bulk_reschedule_entries(body.curriculum_ids, body.shift_days)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except InvalidStateError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return BulkRescheduleResponse(updated=[
+        CurriculumEntrySummary(
+            id=curriculum.id,
+            topic=curriculum.topic,
+            entry_type=curriculum.entry_type.value if curriculum.entry_type else "",
+            chapter_label=curriculum.chapter_label or "",
+            completion_date=curriculum.target_completion_date,
+            max_marks=curriculum.max_marks or 0.0,
+            resources_hold=curriculum.resources_hold,
+            status=display_status(curriculum_upload_svc.db, curriculum),
+            pending_completion=_pending_completion_list(curriculum),
+        )
+        for curriculum in curricula
+    ])
 
 
 @router.post("/{upload_id}/resend-syllabus", response_model=ResendSyllabusResponse)

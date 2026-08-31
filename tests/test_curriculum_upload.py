@@ -29,7 +29,13 @@ from app.models.midterm_detail import MidtermDetail
 from app.services.curriculum_upload_service import CurriculumUploadService
 from app.services.late_token_service import LateTokenService
 from app.services.scheduler_service import SchedulerService
-from tests.conftest import FakeScheduler, NoopEmailAdapter, RecordingEmailAdapter
+from tests.conftest import (
+    FakeScheduler,
+    NoopEmailAdapter,
+    RecordingEmailAdapter,
+    make_assessment,
+    make_curriculum,
+)
 
 
 def _scheduler(db) -> SchedulerService:
@@ -584,3 +590,95 @@ class TestDailyRecheckJob:
         recheck_pending_midterms_job()
 
         assert recording_email.hold_reminder_calls == []
+
+
+class TestBulkReschedule:
+    """CurriculumUploadService.bulk_reschedule_entries — shifts due_date/
+    scheduled_date forward for missed ('expired') entries without
+    regenerating already-generated content, so the existing send pipeline
+    resends it as-is once the new scheduled_at arrives."""
+
+    def test_shifts_dates_resets_status_and_keeps_content(self, db):
+        curriculum = make_curriculum(db, entry_type="assessment", target_completion_date=date(2026, 8, 15))
+        assessment, _ = make_assessment(db, curriculum, status=AssessmentStatus.expired, due_offset_days=-5)
+        original_text = assessment.assessment_text
+        original_due_date = assessment.due_date
+        assert original_text is not None
+        service = CurriculumUploadService(db, NoopEmailAdapter(), _scheduler(db))
+
+        [updated] = service.bulk_reschedule_entries([curriculum.id], shift_days=10)
+
+        assert updated.target_completion_date == date(2026, 8, 25)
+        db.expire_all()
+        refreshed = db.get(Assessment, assessment.id)
+        assert refreshed.status == AssessmentStatus.scheduled
+        assert refreshed.assessment_text == original_text  # untouched, not regenerated
+        assert refreshed.due_date > original_due_date
+        assert refreshed.send_job_claimed_at is None
+
+    def test_refuses_an_entry_not_yet_due(self, db):
+        curriculum = make_curriculum(db, entry_type="assessment")
+        make_assessment(db, curriculum, status=AssessmentStatus.scheduled, due_offset_days=7)
+        service = CurriculumUploadService(db, NoopEmailAdapter(), _scheduler(db))
+
+        with pytest.raises(InvalidStateError, match="not eligible"):
+            service.bulk_reschedule_entries([curriculum.id], shift_days=10)
+
+    def test_refuses_an_already_graded_entry(self, db):
+        curriculum = make_curriculum(db, entry_type="assessment")
+        make_assessment(db, curriculum, status=AssessmentStatus.completed, due_offset_days=-5)
+        service = CurriculumUploadService(db, NoopEmailAdapter(), _scheduler(db))
+
+        with pytest.raises(InvalidStateError, match="not eligible"):
+            service.bulk_reschedule_entries([curriculum.id], shift_days=10)
+
+    def test_refuses_a_nonpositive_shift(self, db):
+        curriculum = make_curriculum(db, entry_type="assessment")
+        make_assessment(db, curriculum, status=AssessmentStatus.expired, due_offset_days=-5)
+        service = CurriculumUploadService(db, NoopEmailAdapter(), _scheduler(db))
+
+        with pytest.raises(InvalidStateError, match="shift_days"):
+            service.bulk_reschedule_entries([curriculum.id], shift_days=0)
+
+    def test_atomic_one_invalid_id_writes_nothing(self, db):
+        curriculum = make_curriculum(db, entry_type="assessment")
+        assessment, _ = make_assessment(db, curriculum, status=AssessmentStatus.expired, due_offset_days=-5)
+        service = CurriculumUploadService(db, NoopEmailAdapter(), _scheduler(db))
+
+        with pytest.raises(NotFoundError):
+            service.bulk_reschedule_entries([curriculum.id, "does-not-exist"], shift_days=10)
+
+        db.expire_all()
+        assert db.get(Assessment, assessment.id).status == AssessmentStatus.expired
+
+    def test_bulk_shifts_multiple_entries_in_one_call(self, db):
+        curricula = [
+            make_curriculum(db, entry_type="assessment", topic=f"Topic {i}")
+            for i in range(3)
+        ]
+        assessments = [
+            make_assessment(db, c, status=AssessmentStatus.expired, due_offset_days=-5)[0]
+            for c in curricula
+        ]
+        service = CurriculumUploadService(db, NoopEmailAdapter(), _scheduler(db))
+
+        updated = service.bulk_reschedule_entries([c.id for c in curricula], shift_days=5)
+
+        assert len(updated) == 3
+        db.expire_all()
+        for a in assessments:
+            assert db.get(Assessment, a.id).status == AssessmentStatus.scheduled
+
+    def test_http_route_bulk_reschedules(self, client, db):
+        curriculum = make_curriculum(db, entry_type="assessment")
+        make_assessment(db, curriculum, status=AssessmentStatus.expired, due_offset_days=-5)
+
+        response = client.post(
+            "/api/v1/curriculum-uploads/entries/bulk-reschedule",
+            json={"curriculum_ids": [curriculum.id], "shift_days": 7},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body["updated"]) == 1
+        assert body["updated"][0]["status"] == "Not Yet Due"

@@ -1029,6 +1029,7 @@ function statusBadgeClass(status) {
   if (status === 'Graded') return 'text-bg-success';
   if (status.startsWith('Missed — Late-Eligible')) return 'text-bg-warning';
   if (status === 'Missed — No Score') return 'text-bg-danger';
+  if (status === 'Needs Manual Diagnosis') return 'text-bg-danger';
   if (status === 'Awaiting Resources (Held)') return 'text-bg-warning';
   if (status === 'Exam Sent') return 'text-bg-info';
   return 'text-bg-secondary'; // Not Yet Due
@@ -1136,6 +1137,19 @@ function refreshEntriesIfLoaded() {
     viewEntries();
   }
 }
+
+// Background poll — the only live-update mechanism anywhere in this page;
+// every status change otherwise requires a manual reload/re-click. This
+// closes the gap that mattered in practice: a background job transition
+// (e.g. needs_manual_diagnosis) previously stayed invisible in an open tab
+// indefinitely, with no user action to hook a refresh onto. Skips the
+// refresh while a project-submit panel is expanded, since viewEntries()
+// replaces the whole entries-list box wholesale — polling mid-fill would
+// silently collapse the panel and drop whatever the user had typed.
+setInterval(() => {
+  if (document.querySelector('[id^="project-submit-"]:not(.d-none)')) return;
+  refreshEntriesIfLoaded();
+}, 60000);
 
 function toggleProjectSubmit(entryId) {
   document.getElementById(`project-submit-${entryId}`).classList.toggle('d-none');

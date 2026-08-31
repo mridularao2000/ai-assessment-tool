@@ -56,13 +56,21 @@ def resend_assessment(
     assessment_svc: AssessmentService = Depends(get_assessment_service),
 ) -> AssessmentSummary:
     """Manually re-run the scheduled send for an assessment stuck in
-    `scheduled` status past its scheduled_at.
+    `scheduled` status past its scheduled_at, or one moved to
+    `needs_manual_diagnosis` after exhausting its tool-call budget.
 
     send_assessment_job is registered as a one-shot APScheduler `date`
     trigger — if that single execution raised (an LLM call failure, an
     email send failure, ...), the row's send_job_claimed_at is released
     so a retry CAN succeed, but nothing retries it automatically; the job
     itself is already consumed. This endpoint is that manual retry.
+
+    needs_manual_diagnosis is accepted here deliberately: it's the one
+    failure mode recheck_stuck_assessments_job's 15-minute sweep will never
+    pick back up on its own (its query only matches status == scheduled),
+    so this endpoint is the only path back to a working state once the
+    underlying cause has been fixed — both the sweep's give-up log message
+    and the needs_manual_diagnosis alert email point here.
 
     Safe to call even if the original execution actually did succeed
     concurrently — send_assessment_job's atomic claim on
@@ -71,18 +79,20 @@ def resend_assessment(
 
     Raises:
         NotFoundError: assessment_id doesn't exist.
-        InvalidStateError: not currently `scheduled`, or scheduled_at
+        InvalidStateError: not currently `scheduled` or
+                            `needs_manual_diagnosis`, or scheduled_at
                             hasn't arrived yet (nothing to force).
     """
     assessment = assessment_svc.db.get(Assessment, assessment_id)
     if assessment is None:
         raise HTTPException(status_code=404, detail=f"Assessment {assessment_id!r} not found.")
-    if assessment.status != AssessmentStatus.scheduled:
+    if assessment.status not in (AssessmentStatus.scheduled, AssessmentStatus.needs_manual_diagnosis):
         raise HTTPException(
             status_code=409,
             detail=(
-                f"Assessment {assessment_id!r} is not in 'scheduled' status "
-                f"(currently {assessment.status.value!r}) — nothing to resend."
+                f"Assessment {assessment_id!r} is not in 'scheduled' or "
+                f"'needs_manual_diagnosis' status (currently "
+                f"{assessment.status.value!r}) — nothing to resend."
             ),
         )
     if datetime.utcnow() < assessment.scheduled_at:

@@ -142,25 +142,22 @@ class TestRecheckStuckAssessments:
         db.expire_all()
         assert db.get(Assessment, assessment.id).status == AssessmentStatus.active
 
-    def test_stops_auto_retrying_past_the_give_up_window(self, db, monkeypatch):
-        """The bound this exists for: once a row has been stuck long enough
-        that a persistent (not transient) cause is the likely explanation,
-        the sweep must stop spending real API credit on it automatically —
-        no LLM call at all past that point, not even a failing one."""
+    def test_keeps_retrying_a_row_stuck_far_past_the_old_give_up_window(self, db, monkeypatch):
+        """There is no time-based give-up ceiling anymore (see the job's
+        docstring): a row stuck well past what used to be the 3-hour cutoff
+        must still be retried, not silently abandoned. The genuinely
+        expensive persistent-failure case is handled precisely elsewhere —
+        by send_assessment_job moving to needs_manual_diagnosis — so any
+        row still `scheduled` is safe to keep retrying indefinitely."""
         seed_prompt_templates(db)
-        monkeypatch.setattr("app.jobs.recheck_stuck_assessments_job.SessionLocal", TestSessionLocal)
+        _patch_job_infra(monkeypatch)
         curriculum = make_curriculum(db, entry_type="assessment")
-        # Default give-up window is 3 hours — this row has been stuck for 4.
-        assessment = _make_scheduled_assessment(
-            db, curriculum, scheduled_at=datetime.utcnow() - timedelta(hours=4)
-        )
+        long_stuck = datetime.utcnow() - timedelta(hours=4)
+        assessment = _make_scheduled_assessment(db, curriculum, scheduled_at=long_stuck)
 
-        def _poison(*args, **kwargs):
-            raise AssertionError("must not call the LLM past the give-up window")
-
-        monkeypatch.setattr("app.jobs.send_assessment_job.send_assessment_job", _poison)
-
-        recheck_stuck_assessments_job()  # must not raise, must not touch send_assessment_job
+        recheck_stuck_assessments_job()
 
         db.expire_all()
-        assert db.get(Assessment, assessment.id).status == AssessmentStatus.scheduled
+        refreshed = db.get(Assessment, assessment.id)
+        assert refreshed.status == AssessmentStatus.active
+        assert refreshed.assessment_text is not None

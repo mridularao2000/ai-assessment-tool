@@ -123,6 +123,40 @@ class TestUpdateEntry:
         assert updated2.assessments[0].id != first_assessment.id
         assert updated2.assessments[0].status == AssessmentStatus.scheduled
 
+    def test_entry_stuck_in_needs_manual_diagnosis_is_editable(self, db):
+        """Real incident this covers: Performance Optimization I,
+        2026-08-31 — generation exhausted its tool-call budget with no
+        content ever produced (needs_manual_diagnosis), yet the entry was
+        refused for editing with the same "already has an attempt or
+        grade on record" message used for entries with REAL content —
+        there was nothing to corrupt, and no way to fix the resource that
+        was likely causing the runaway tool loop. This status must be
+        editable, same as a fresh 'scheduled' row."""
+        seed_prompt_templates(db)
+        upload = _make_upload(db)
+        curriculum = make_curriculum(
+            db, topic="Stuck Topic", entry_type=CurriculumEntryType.assessment,
+            target_completion_date=date.today().replace(year=date.today().year + 1),
+        )
+        curriculum.upload_id, curriculum.max_marks, curriculum.chapter_label = (
+            upload.id, 50.0, "Chapter 6",
+        )
+        db.commit()
+        stuck, _ = make_assessment(db, curriculum, status=AssessmentStatus.needs_manual_diagnosis)
+        assert stuck.assessment_text is not None  # make_assessment's default; irrelevant here —
+        # the real-world row has assessment_text=None, but editability must not depend on that.
+
+        upload_service = CurriculumUploadService(
+            db, NoopEmailAdapter(), SchedulerService(db, FakeScheduler())
+        )
+        updated = upload_service.update_entry(curriculum.id, {"topic": "Fixed Topic"})
+
+        assert updated.topic == "Fixed Topic"
+        # The broken row was deleted and a fresh one scheduled in its place.
+        assert len(updated.assessments) == 1
+        assert updated.assessments[0].id != stuck.id
+        assert updated.assessments[0].status == AssessmentStatus.scheduled
+
     def test_entry_with_an_attempt_cannot_be_silently_modified(self, db):
         """The explicit design choice: an entry with any attempt or grade
         on record is protected from modification, not silently allowed —
