@@ -37,6 +37,7 @@ from app.interfaces.llm import (
     MidtermRetestGenerationRequest,
     RescheduleClassificationRequest,
     RetestGenerationRequest,
+    filter_fetchable_resources,
     llm_log_context,
 )
 
@@ -489,6 +490,165 @@ class TestCodeExecutionCallerRestriction:
         # into context, independent of whether allowed_callers alone fully
         # closes the code_execution avenue.
         assert WEB_FETCH_TOOL["max_content_tokens"] <= 8000
+
+
+# ── Regression tests: nonsensical-search resource filtering ───────────────────
+# Root cause, found via a curriculum_seed.json structural audit (2026-08-30):
+# two real entries pass labels into own_resources/resources that describe
+# internal/personal context, not a real resource — "own cyber-sale workflow
+# notes" (System Design Fundamentals) and "cumulative: all Assessments with
+# completion_date on/before ..." (every midterm past the first, where
+# known_now just redescribes content already supplied via
+# cumulative_pool_content). Both would trigger a doomed web_search/web_fetch
+# attempt if left in. filter_fetchable_resources() drops them before any
+# Request dataclass field or tool-gating decision sees them.
+
+
+class TestFilterFetchableResources:
+    def test_drops_own_notes_label(self):
+        # The exact real label from curriculum_seed.json's System Design
+        # Fundamentals entry.
+        result = filter_fetchable_resources([
+            "\"System Design Interview\" by Alex Xu, Vol 1 (scalability, reliability patterns, databases at scale, distributed systems)",
+            "ByteByteGo (caching/CDNs, message queues)",
+            "Grokking System Design (educative.io — structured practice)",
+            "own cyber-sale workflow notes (reliability patterns)",
+        ])
+        assert "own cyber-sale workflow notes (reliability patterns)" not in result
+        assert len(result) == 3
+
+    def test_drops_cumulative_pool_label(self):
+        # The exact real label from curriculum_seed.json's Midterm 2/3/4
+        # known_now entries.
+        result = filter_fetchable_resources([
+            "cumulative: all Assessments with completion_date on/before 2026-09-13",
+        ])
+        assert result == []
+
+    def test_keeps_real_resources_untouched(self):
+        real = ["react.dev (rendering, keys, reconciliation, JSX docs)", "Full Stack Open Part 1"]
+        assert filter_fetchable_resources(real) == real
+
+    def test_mixed_list_keeps_real_and_drops_internal(self):
+        result = filter_fetchable_resources([
+            "react.dev (component/rendering resources, for Part 1)",
+            "WAI-ARIA APG",
+            "cumulative: all Assessments with completion_date on/before 2026-10-04",
+            "own design notes",
+        ])
+        assert result == ["react.dev (component/rendering resources, for Part 1)", "WAI-ARIA APG"]
+
+    def test_empty_list_stays_empty(self):
+        assert filter_fetchable_resources([]) == []
+
+    def test_case_insensitive_and_whitespace_tolerant(self):
+        result = filter_fetchable_resources(["  OWN team retro notes", "Cumulative: everything so far"])
+        assert result == []
+
+
+class TestFilterAppliedInAdapterMethods:
+    """The filter must be applied inside each of the 5 tool-enabled methods
+    — not left to callers to remember — so a request built from real seed
+    data (a genuine own_resources/resources list containing an internal-
+    only label) never enables tools or renders resource_guidance for it."""
+
+    def _good_assessment_json(self) -> str:
+        return json.dumps({
+            "assessment_text": "text", "rubric": "rubric", "duration_minutes": 60,
+        })
+
+    def _good_midterm_json(self) -> str:
+        return json.dumps({
+            "part1_text": "p1", "part1_rubric": "r1", "part2_text": "p2",
+            "part2_rubric": "r2", "duration_minutes": 120,
+        })
+
+    def test_generate_assessment_tools_omitted_when_only_internal_label_present(self, adapter):
+        # Mirrors System Design Fundamentals with only the internal label
+        # left (the other 3 real resources omitted here just to isolate
+        # the boundary case: internal-only -> no tools at all).
+        req = AssessmentGenerationRequest(
+            topic="System Design", curriculum_content="notes",
+            prompt_template_body="{topic}{curriculum_content}{resource_guidance}",
+            resources=["own cyber-sale workflow notes (reliability patterns)"],
+        )
+        mock = _patch_create(adapter, self._good_assessment_json())
+        adapter.generate_assessment(req)
+        assert "tools" not in mock.call_args[1]
+
+    def test_generate_assessment_resource_guidance_omits_internal_label(self, adapter):
+        req = AssessmentGenerationRequest(
+            topic="System Design", curriculum_content="notes",
+            prompt_template_body="{topic}{curriculum_content}{resource_guidance}",
+            resources=["ByteByteGo (caching/CDNs, message queues)", "own cyber-sale workflow notes (reliability patterns)"],
+        )
+        mock = _patch_create(adapter, self._good_assessment_json())
+        adapter.generate_assessment(req)
+        prompt = mock.call_args[1]["messages"][0]["content"]
+        assert "own cyber-sale workflow notes" not in prompt
+        assert "ByteByteGo" in prompt
+
+    def test_generate_midterm_tools_omitted_for_cumulative_only_label(self, adapter):
+        # Mirrors Midterm 2/3/4's known_now exactly: just the self-
+        # referential cumulative-pool label, nothing else.
+        req = MidtermGenerationRequest(
+            topic="Chat App", cumulative_pool_content="[real assembled pool content]",
+            own_resources=["cumulative: all Assessments with completion_date on/before 2026-09-13"],
+            probe_focus="reconnect logic", part1_max_marks=30.0, part2_max_marks=70.0,
+            prompt_template_body="{topic}{cumulative_pool_content}{own_resources_list}{resource_guidance}{probe_focus}{part1_max_marks}{part2_max_marks}{readme_content}",
+        )
+        mock = _patch_create(adapter, self._good_midterm_json())
+        adapter.generate_midterm(req)
+        assert "tools" not in mock.call_args[1]
+
+    def test_generate_midterm_falls_back_to_non_tool_attempt_cap(self, adapter):
+        """With the internal-only label filtered to empty, this must use
+        the plain (non-tool) retry path — settings.llm_max_retries (3),
+        not _TOOL_PATH_MAX_ATTEMPTS (2) — since there's no real tool
+        budget at stake."""
+        bad = "not json"
+        req = MidtermGenerationRequest(
+            topic="Chat App", cumulative_pool_content="[pool]",
+            own_resources=["cumulative: all Assessments with completion_date on/before 2026-09-13"],
+            probe_focus="x", part1_max_marks=30.0, part2_max_marks=70.0,
+            prompt_template_body="{topic}{cumulative_pool_content}{own_resources_list}{resource_guidance}{probe_focus}{part1_max_marks}{part2_max_marks}{readme_content}",
+        )
+        mock = _patch_create(adapter, bad, bad, bad)
+        with pytest.raises(LLMValidationError) as exc_info:
+            adapter.generate_midterm(req)
+        assert mock.call_count == 3
+        assert not isinstance(exc_info.value, LLMToolBudgetExceededError)
+
+    def test_grade_midterm_submission_tools_omitted_for_internal_only_resources(self, adapter):
+        req = MidtermGradingRequest(
+            part1_text="p1", part1_rubric="r1", part2_text="p2", part2_rubric="r2",
+            part1_max_marks=30.0, part2_max_marks=70.0,
+            part1_submission_content="a1", part2_submission_content="a2",
+            prompt_template_body="{part1_text}{part1_rubric}{part2_text}{part2_rubric}"
+                                  "{part1_max_marks}{part2_max_marks}"
+                                  "{part1_submission_content}{part2_submission_content}"
+                                  "{resource_guidance}{readme_content}",
+            resources=["cumulative: all Assessments with completion_date on/before 2026-10-04"],
+        )
+        good_grading_json = json.dumps({
+            "part1_score": 27.0, "part2_score": 63.0, "weak_areas": [], "overall_feedback": "ok",
+        })
+        mock = _patch_create(adapter, good_grading_json)
+        adapter.grade_midterm_submission(req)
+        assert "tools" not in mock.call_args[1]
+
+    def test_real_resources_alongside_internal_label_still_enable_tools(self, adapter):
+        """Sanity check the filter isn't over-triggering: a mixed list
+        (real resource + internal label) must still enable tools for the
+        real resource."""
+        req = AssessmentGenerationRequest(
+            topic="React", curriculum_content="notes",
+            prompt_template_body="{topic}{curriculum_content}{resource_guidance}",
+            resources=["react.dev (rendering docs)", "own personal cheat sheet"],
+        )
+        mock = _patch_create(adapter, self._good_assessment_json())
+        adapter.generate_assessment(req)
+        assert mock.call_args[1]["tools"]
 
 
 class TestToolBudgetExceededErrorType:

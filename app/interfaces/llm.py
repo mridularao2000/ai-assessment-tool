@@ -45,6 +45,38 @@ def current_llm_log_context() -> str:
     """Read the current tag set by the nearest enclosing llm_log_context()."""
     return _log_context.get()
 
+
+# ── Resource-label filtering ─────────────────────────────────────────────────
+# Labels matching these prefixes describe internal/personal context rather
+# than any real resource — external and fetchable, OR public and generally
+# known (the model has no general knowledge to fall back on for someone's
+# own notes, and a self-referential "cumulative: ..." label just
+# redescribes content already supplied separately via
+# MidtermGenerationRequest.cumulative_pool_content — it was never meant to
+# be an independent resource). Passing either into web_search/web_fetch
+# produces a doomed search (confirmed via a curriculum_seed.json structural
+# audit, 2026-08-30: "own cyber-sale workflow notes" in the System Design
+# Fundamentals entry, and "cumulative: all Assessments with completion_date
+# on/before ..." in every midterm past the first). Filtered out entirely
+# before a resource list ever reaches a Request dataclass — no "use general
+# knowledge instead" framing is offered the way AnthropicLLMAdapter's
+# NON_FETCHABLE_NOTES does for a paid book or a known tool, since that
+# framing would be actively misleading here (the model has never seen
+# "your own notes") or redundant (the cumulative pool is already provided).
+_INTERNAL_ONLY_PREFIXES: tuple[str, ...] = (
+    "own ",
+    "cumulative:",
+)
+
+
+def filter_fetchable_resources(resources: list[str]) -> list[str]:
+    """Drop labels describing internal/personal context rather than a real
+    resource — see _INTERNAL_ONLY_PREFIXES. Callers apply this before a
+    resource list is used to build any *Request dataclass's resources/
+    own_resources field, so these labels never trigger a nonsensical
+    web_search/web_fetch attempt."""
+    return [r for r in resources if not r.strip().lower().startswith(_INTERNAL_ONLY_PREFIXES)]
+
 # ── Category type ─────────────────────────────────────────────────────────────
 # Literal union of all valid reschedule categories.
 # Approved categories: application code in RescheduleService maps these to

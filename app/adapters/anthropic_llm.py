@@ -48,6 +48,7 @@ from app.interfaces.llm import (
     LLMValidationError,
     MidtermGenerationRequest,
     current_llm_log_context,
+    filter_fetchable_resources,
     MidtermGenerationResult,
     MidtermGradingRequest,
     MidtermGradingResult,
@@ -370,6 +371,11 @@ class AnthropicLLMAdapter:
     def generate_assessment(
         self, request: AssessmentGenerationRequest
     ) -> AssessmentGenerationResult:
+        # Filtered once, up front — see filter_fetchable_resources: internal/
+        # personal labels ("own ...", "cumulative: ...") never reach
+        # resource_guidance or gate tool availability below.
+        resources = filter_fetchable_resources(request.resources or [])
+
         def _attempt(
             req: AssessmentGenerationRequest, attempt: int, budget: "_CallBudget | None" = None
         ) -> AssessmentGenerationResult:
@@ -377,11 +383,11 @@ class AnthropicLLMAdapter:
                 req.prompt_template_body,
                 topic=req.topic,
                 curriculum_content=req.curriculum_content,
-                resource_guidance=build_resource_guidance(req.resources or []),
+                resource_guidance=build_resource_guidance(resources),
             )
             if attempt > 0:
                 prompt += _RETRY_NUDGE_TOOL_AWARE
-            tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL] if req.resources else None
+            tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL] if resources else None
             raw = self._call(prompt, max_tokens=16000, tools=tools, budget=budget)
             data = self._parse_json(raw)
             try:
@@ -393,7 +399,7 @@ class AnthropicLLMAdapter:
             except (KeyError, TypeError, ValueError) as exc:
                 raise LLMValidationError(f"generate_assessment schema mismatch: {exc}\n\nData: {data}") from exc
 
-        if request.resources:
+        if resources:
             return self._retry(
                 _attempt, request,
                 max_attempts=_TOOL_PATH_MAX_ATTEMPTS, budget_ceiling=self._tool_call_budget_tokens,
@@ -403,6 +409,12 @@ class AnthropicLLMAdapter:
     def generate_midterm(
         self, request: MidtermGenerationRequest
     ) -> MidtermGenerationResult:
+        # See filter_fetchable_resources: known_now for Midterms 2+ carries a
+        # self-referential "cumulative: ..." label describing the pool
+        # already supplied via cumulative_pool_content — not itself a
+        # resource to search/fetch. Filtered once, up front.
+        own_resources = filter_fetchable_resources(request.own_resources)
+
         def _attempt(
             req: MidtermGenerationRequest, attempt: int, budget: "_CallBudget | None" = None
         ) -> MidtermGenerationResult:
@@ -410,8 +422,8 @@ class AnthropicLLMAdapter:
                 req.prompt_template_body,
                 topic=req.topic,
                 cumulative_pool_content=req.cumulative_pool_content,
-                own_resources_list="\n".join(f"- {r}" for r in req.own_resources) or "(none)",
-                resource_guidance=build_resource_guidance(req.own_resources),
+                own_resources_list="\n".join(f"- {r}" for r in own_resources) or "(none)",
+                resource_guidance=build_resource_guidance(own_resources),
                 probe_focus=req.probe_focus or "(not specified)",
                 part1_max_marks=req.part1_max_marks,
                 part2_max_marks=req.part2_max_marks,
@@ -420,7 +432,7 @@ class AnthropicLLMAdapter:
             )
             if attempt > 0:
                 prompt += _RETRY_NUDGE_TOOL_AWARE
-            tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL] if req.own_resources else None
+            tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL] if own_resources else None
             raw = self._call(prompt, max_tokens=16000, tools=tools, budget=budget)
             data = self._parse_json(raw)
             try:
@@ -434,7 +446,7 @@ class AnthropicLLMAdapter:
             except (KeyError, TypeError, ValueError) as exc:
                 raise LLMValidationError(f"generate_midterm schema mismatch: {exc}\n\nData: {data}") from exc
 
-        if request.own_resources:
+        if own_resources:
             return self._retry(
                 _attempt, request,
                 max_attempts=_TOOL_PATH_MAX_ATTEMPTS, budget_ceiling=self._tool_call_budget_tokens,
@@ -444,6 +456,8 @@ class AnthropicLLMAdapter:
     def generate_retest(
         self, request: RetestGenerationRequest
     ) -> AssessmentGenerationResult:
+        resources = filter_fetchable_resources(request.resources or [])
+
         def _attempt(
             req: RetestGenerationRequest, attempt: int, budget: "_CallBudget | None" = None
         ) -> AssessmentGenerationResult:
@@ -454,11 +468,11 @@ class AnthropicLLMAdapter:
                 previous_mastery_score=req.previous_mastery_score,
                 weak_areas=", ".join(req.weak_areas),
                 attempt_number=req.attempt_number,
-                resource_guidance=build_resource_guidance(req.resources or []),
+                resource_guidance=build_resource_guidance(resources),
             )
             if attempt > 0:
                 prompt += _RETRY_NUDGE_TOOL_AWARE
-            tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL] if req.resources else None
+            tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL] if resources else None
             raw = self._call(prompt, max_tokens=16000, tools=tools, budget=budget)
             data = self._parse_json(raw)
             try:
@@ -470,7 +484,7 @@ class AnthropicLLMAdapter:
             except (KeyError, TypeError, ValueError) as exc:
                 raise LLMValidationError(f"generate_retest schema mismatch: {exc}\n\nData: {data}") from exc
 
-        if request.resources:
+        if resources:
             return self._retry(
                 _attempt, request,
                 max_attempts=_TOOL_PATH_MAX_ATTEMPTS, budget_ceiling=self._tool_call_budget_tokens,
@@ -480,6 +494,8 @@ class AnthropicLLMAdapter:
     def generate_midterm_retest(
         self, request: MidtermRetestGenerationRequest
     ) -> MidtermGenerationResult:
+        own_resources = filter_fetchable_resources(request.own_resources)
+
         def _attempt(
             req: MidtermRetestGenerationRequest, attempt: int, budget: "_CallBudget | None" = None
         ) -> MidtermGenerationResult:
@@ -487,8 +503,8 @@ class AnthropicLLMAdapter:
                 req.prompt_template_body,
                 topic=req.topic,
                 cumulative_pool_content=req.cumulative_pool_content,
-                own_resources_list="\n".join(f"- {r}" for r in req.own_resources) or "(none)",
-                resource_guidance=build_resource_guidance(req.own_resources),
+                own_resources_list="\n".join(f"- {r}" for r in own_resources) or "(none)",
+                resource_guidance=build_resource_guidance(own_resources),
                 probe_focus=req.probe_focus or "(not specified)",
                 part1_max_marks=req.part1_max_marks,
                 part2_max_marks=req.part2_max_marks,
@@ -501,7 +517,7 @@ class AnthropicLLMAdapter:
             )
             if attempt > 0:
                 prompt += _RETRY_NUDGE_TOOL_AWARE
-            tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL] if req.own_resources else None
+            tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL] if own_resources else None
             raw = self._call(prompt, max_tokens=16000, tools=tools, budget=budget)
             data = self._parse_json(raw)
             try:
@@ -515,7 +531,7 @@ class AnthropicLLMAdapter:
             except (KeyError, TypeError, ValueError) as exc:
                 raise LLMValidationError(f"generate_midterm_retest schema mismatch: {exc}\n\nData: {data}") from exc
 
-        if request.own_resources:
+        if own_resources:
             return self._retry(
                 _attempt, request,
                 max_attempts=_TOOL_PATH_MAX_ATTEMPTS, budget_ceiling=self._tool_call_budget_tokens,
@@ -552,6 +568,8 @@ class AnthropicLLMAdapter:
         return self._retry(_attempt, request)
 
     def grade_midterm_submission(self, request: MidtermGradingRequest) -> MidtermGradingResult:
+        resources = filter_fetchable_resources(request.resources or [])
+
         def _attempt(
             req: MidtermGradingRequest, attempt: int, budget: "_CallBudget | None" = None
         ) -> MidtermGradingResult:
@@ -565,13 +583,13 @@ class AnthropicLLMAdapter:
                 part2_max_marks=req.part2_max_marks,
                 part1_submission_content=req.part1_submission_content,
                 part2_submission_content=req.part2_submission_content,
-                resource_guidance=build_resource_guidance(req.resources or []),
+                resource_guidance=build_resource_guidance(resources),
                 readme_content=req.readme_content
                 or "(No project README/design writeup was submitted for this midterm.)",
             )
             if attempt > 0:
                 prompt += _RETRY_NUDGE_TOOL_AWARE
-            tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL] if req.resources else None
+            tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL] if resources else None
             raw = self._call(prompt, max_tokens=8000, tools=tools, budget=budget)
             data = self._parse_json(raw)
             try:
@@ -594,7 +612,7 @@ class AnthropicLLMAdapter:
             except (KeyError, TypeError, ValueError) as exc:
                 raise LLMValidationError(f"grade_midterm_submission schema mismatch: {exc}\n\nData: {data}") from exc
 
-        if request.resources:
+        if resources:
             return self._retry(
                 _attempt, request,
                 max_attempts=_TOOL_PATH_MAX_ATTEMPTS, budget_ceiling=self._tool_call_budget_tokens,
