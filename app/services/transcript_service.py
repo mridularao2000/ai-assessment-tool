@@ -48,14 +48,18 @@ def display_status(db: Session, curriculum: Curriculum) -> str:
         #
         # BUT: target_completion_date can also be pushed into the FUTURE
         # out-of-band (e.g. a manual date shift while resources are still
-        # pending) — that's still-held, not missed, regardless of which
-        # calendar month it lands in. Only a due date that has actually
-        # passed can ever be "missed"; a future month must never be treated
-        # as an expired one just because it doesn't match the current month.
+        # pending) — resources_hold alone can't distinguish "overdue and
+        # blocked" from "not due yet, resources just haven't been supplied
+        # early." Only a due date that has actually passed is ever urgent;
+        # a future date reads as an ordinary not-yet-due entry (the
+        # resources_hold flag itself is untouched either way — it still
+        # gates generation and still drives the "submit project" prompt in
+        # the UI, which reads resources_hold directly rather than this
+        # label — this only changes which status word is shown).
         today = date.today()
         due = curriculum.target_completion_date
         if due >= today:
-            return HELD
+            return NOT_YET_DUE
         if (due.year, due.month) != (today.year, today.month):
             return MISSED_NO_SCORE
         return HELD

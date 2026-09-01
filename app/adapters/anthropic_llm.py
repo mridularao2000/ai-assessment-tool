@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 import anthropic
@@ -273,14 +274,27 @@ class AnthropicLLMAdapter:
         return "\n".join(parts)
 
     def _parse_json(self, text: str) -> dict[str, Any]:
-        """Extract and parse JSON from a Claude response."""
-        # Strip markdown code fences if present
+        """Extract and parse JSON from a Claude response.
+
+        On the tool-enabled path, Claude reliably prefaces its JSON answer
+        with a sentence or two of narration ("I'll fetch all the curriculum
+        resources... I have sufficient information...") even when the
+        prompt explicitly says to return only JSON — a fenced block is no
+        longer guaranteed to start at position 0, so a fence search anywhere
+        in the text (not just a startswith check) is required to still find
+        it.
+        """
         stripped = text.strip()
-        if stripped.startswith("```"):
-            lines = stripped.splitlines()
-            # Drop opening fence (```json or ```) and closing fence
-            inner = lines[1:-1] if lines[-1].strip() == "```" else lines[1:]
-            stripped = "\n".join(inner)
+        fence_match = re.search(r"```(?:json)?\s*\n(.*?)\n```", stripped, re.DOTALL)
+        if fence_match:
+            stripped = fence_match.group(1).strip()
+        else:
+            # No fence at all (or an unclosed one) — fall back to the first
+            # balanced top-level {...} object anywhere in the text, in case
+            # the model wrote raw JSON amid prose without fencing it.
+            brace_match = re.search(r"\{.*\}", stripped, re.DOTALL)
+            if brace_match:
+                stripped = brace_match.group(0)
         try:
             return json.loads(stripped)
         except json.JSONDecodeError as exc:

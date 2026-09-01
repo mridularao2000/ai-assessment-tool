@@ -33,9 +33,26 @@ from app.models.midterm_detail import MidtermDetail
 from app.services.curriculum_upload_service import CurriculumUploadService
 from app.services.gpa_service import compute_gpa
 from app.services.late_token_service import LateTokenService
-from app.services.transcript_service import HELD, MISSED_NO_SCORE, compute_transcript, display_status
+from app.services.transcript_service import (
+    HELD,
+    MISSED_NO_SCORE,
+    NOT_YET_DUE,
+    compute_transcript,
+    display_status,
+)
 from tests.conftest import FakeScheduler, RecordingEmailAdapter, make_curriculum
 from app.services.scheduler_service import SchedulerService
+
+
+class _FixedDate(date):
+    """Pins "today" for tests that need a deterministic same-month-but-
+    already-passed due date — plain date.today() - timedelta(...) breaks
+    near a calendar-month boundary (see the two pre-existing failures in
+    this file caused by the 2026-09-01 rollover)."""
+
+    @classmethod
+    def today(cls):
+        return date(2026, 8, 20)
 
 
 def _make_upload(db, source_filename="test.json") -> CurriculumUpload:
@@ -148,18 +165,39 @@ class TestDisplayStatusAndDownstreamConsumers:
         curriculum = _held_midterm(db, upload, completion_date=last_month)
         assert display_status(db, curriculum) == MISSED_NO_SCORE
 
-    def test_held_with_completion_date_pushed_into_a_future_month_is_still_held(self, db):
+    def test_held_with_completion_date_pushed_into_the_future_reads_as_not_yet_due(self, db):
         """Regression: target_completion_date can be moved into the future
         out-of-band (e.g. a manual reschedule while resources are still
-        pending) — the month-mismatch check must not treat a FUTURE month
-        the same as a past one. A held entry due next month is still
-        recoverable, not permanently missed, just because it isn't due
-        THIS month — that was the actual 2026-08-31 incident (PM System
-        moved from Aug 14 to Sep 5, still resources_hold=True, and the
-        transcript wrongly showed "Missed — No Score")."""
+        pending) — a future due date must never render as the urgent HELD
+        badge, and (per an earlier fix) must never render as permanently
+        missed either. A held entry due next month isn't overdue at all —
+        it should read exactly like any other not-yet-due entry, matching
+        every other midterm with an equally-unfilled but future window
+        (the actual 2026-09-01 incident: PM System moved from Aug 14 to
+        Sep 5, still resources_hold=True, and the transcript wrongly kept
+        showing the urgent "Awaiting Resources (Held)" badge even though
+        nothing was overdue). resources_hold itself, and the "submit
+        project" prompt the frontend derives from it directly, are
+        unaffected — only this display label changes."""
         upload = _make_upload(db)
         next_month = (date.today().replace(day=28) + timedelta(days=10)).replace(day=5)
         curriculum = _held_midterm(db, upload, completion_date=next_month)
+        assert display_status(db, curriculum) == NOT_YET_DUE
+
+    def test_held_with_completion_date_still_genuinely_overdue_stays_held(self, db, monkeypatch):
+        """The urgent badge must still show where it's actually earned: a
+        held entry whose due date has passed but is still within the
+        current calendar month (still token-recoverable) is genuinely
+        urgent and must keep the HELD label. "Today" is pinned rather than
+        using date.today() - timedelta(...) — on the 1st of a real
+        calendar month there is no valid "earlier day, same month" date to
+        construct relative to the actual today, which is exactly the
+        fragility that left two other tests in this file broken by the
+        2026-09-01 month rollover (unrelated pre-existing failures, not
+        touched here)."""
+        monkeypatch.setattr("app.services.transcript_service.date", _FixedDate)
+        upload = _make_upload(db)
+        curriculum = _held_midterm(db, upload, completion_date=date(2026, 8, 15))
         assert display_status(db, curriculum) == HELD
 
     def test_transcript_shows_permanently_missed_midterm_as_missed(self, db):

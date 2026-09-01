@@ -2,7 +2,8 @@
 
 All Anthropic API calls are monkeypatched — no network traffic.
 Tests cover:
-  - _parse_json: valid JSON, code-fenced JSON, invalid JSON
+  - _parse_json: valid JSON, code-fenced JSON, invalid JSON, narration
+    prefacing a fenced block (the tool-path fence-detection regression)
   - _render: template substitution, missing keys
   - _call: all SDK error types mapped to LLMUnavailableError
   - _retry: exhaustion, recovery, call counts, retry-nudge injection
@@ -12,6 +13,7 @@ Tests cover:
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, call
 
@@ -139,6 +141,105 @@ class TestParseJson:
     def test_empty_string_raises_validation_error(self, adapter):
         with pytest.raises(LLMValidationError):
             adapter._parse_json("")
+
+
+_FIXTURES_DIR = Path(__file__).parent / "fixtures"
+
+
+class TestParseJsonToolPathNarration:
+    """Regression coverage for the tool-path fence-detection bug: on the
+    tool-enabled generation path, Claude reliably prefaces its JSON answer
+    with narration ("I'll fetch all the curriculum resources...") before
+    the fenced JSON block, even when the prompt explicitly says to return
+    only JSON. The old `if stripped.startswith("```")` check only stripped
+    a fence when it was the literal first characters of the response, so
+    any narration prefix meant json.loads ran directly on prose, producing
+    "Expecting value: line 1 column 1 (char 0)" — this was the real,
+    confirmed cause of PerfOpt I's needs_manual_diagnosis trip in production.
+    """
+
+    def test_narration_before_fenced_json_no_longer_fails_at_position_zero(self, adapter):
+        """Uses the EXACT raw response text captured from a real, live
+        Anthropic API call made while diagnosing PerfOpt I's failure
+        (tokens_spent=83442/200000 across 2 attempts) — not an approximation.
+
+        This exact real response turns out to carry a SECOND, independent
+        defect beyond the narration prefix: the model's own JSON has an
+        unescaped `"` inside a string value ( called "tree-shaking" ),
+        making it genuinely invalid JSON regardless of fence-detection.
+        That was missed by the earlier diagnosis, which read the content
+        for plausibility but never actually ran it through json.loads.
+
+        So this fixture can't prove a full successful parse end-to-end —
+        but it does prove the specific bug this fix targets is gone: the
+        failure is no longer "Expecting value: line 1 column 1 (char 0)"
+        (fence never found, json.loads called on raw narration). It now
+        correctly locates and enters the fenced JSON block, and fails
+        *inside* it with a normal, specific JSONDecodeError pointing at the
+        real syntax problem — proof the fence was found and stripped this
+        time, not that everything about this response is fine.
+        """
+        text = (_FIXTURES_DIR / "perfopt_narration_before_json_response.txt").read_text()
+        with pytest.raises(LLMValidationError) as exc_info:
+            adapter._parse_json(text)
+        message = str(exc_info.value)
+        assert "line 1 column 1 (char 0)" not in message
+        assert "Expecting ',' delimiter" in message
+
+    def test_narration_before_valid_fenced_json_parses_successfully(self, adapter):
+        """Same narration-then-fence shape as the real captured failure
+        above, but with a correctly-escaped JSON body — isolates the fix
+        under test (fence-finding) from that fixture's unrelated
+        JSON-escaping defect, proving fence-finding works end-to-end once
+        the JSON itself is well-formed."""
+        text = (
+            "I'll fetch all the curriculum resources simultaneously before "
+            "writing the assessment.\n"
+            "I have sufficient information from the fetched sources to "
+            "produce the assessment.\n\n"
+            "```json\n"
+            '{"assessment_text": "Q1: What is tree-shaking?", '
+            '"rubric": "Full marks for a correct definition.", '
+            '"duration_minutes": 75}\n'
+            "```"
+        )
+        result = adapter._parse_json(text)
+        assert result == {
+            "assessment_text": "Q1: What is tree-shaking?",
+            "rubric": "Full marks for a correct definition.",
+            "duration_minutes": 75,
+        }
+
+    def test_narration_after_fenced_json_still_parses(self, adapter):
+        """Claude sometimes adds a closing remark after the fenced JSON
+        instead of (or in addition to) a preface — the fence must be found
+        regardless of what follows it too."""
+        text = (
+            "```json\n"
+            '{"category": "medical", "confidence": "high"}\n'
+            "```\n\n"
+            "I used the general-knowledge fallback for the ByteByteGo "
+            "resource since it requires a paid subscription."
+        )
+        result = adapter._parse_json(text)
+        assert result == {"category": "medical", "confidence": "high"}
+
+    def test_narration_around_malformed_json_still_fails_cleanly(self, adapter):
+        """A narration prefix must not cause the fallback brace-search to
+        mask genuinely malformed JSON — it should still raise
+        LLMValidationError, not silently return garbage or hang."""
+        text = (
+            "I'll use my general knowledge for this one.\n\n"
+            '```json\n{"assessment_text": "unterminated\n```'
+        )
+        with pytest.raises(LLMValidationError, match="not valid JSON"):
+            adapter._parse_json(text)
+
+    def test_pure_json_no_narration_unaffected(self, adapter):
+        """The existing no-narration, no-fence happy path must be
+        unaffected by the fence-search rewrite."""
+        result = adapter._parse_json('{"key": "value", "n": 42}')
+        assert result == {"key": "value", "n": 42}
 
 
 # ── _render ───────────────────────────────────────────────────────────────────
