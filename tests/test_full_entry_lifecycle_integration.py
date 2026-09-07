@@ -420,7 +420,7 @@ class TestFullEntryLifecycleIntegration:
     def test_token_used_on_different_entry_does_not_mark_this_entry_late(
         self, db, monkeypatch
     ):
-        """Scoping confirmation (carried over): attempt_ids in
+        """Scoping confirmation (carried over): the was_late derivation in
         transcript_service._row_for() must be scoped to THIS curriculum
         entry's own attempts only -- never another entry's, even one in the
         same curriculum_upload. Curriculum.assessments is FK'd to the
@@ -429,9 +429,12 @@ class TestFullEntryLifecycleIntegration:
         it holds at the transcript-output level, not just by reading the
         relationship definition.
 
-        Two entries, same upload: entry A has a token spent against its
-        attempt; entry B is graded with no token anywhere near it. Entry
-        B's transcript row must NOT show (LATE).
+        Two entries, same upload: entry A's submission was genuinely late
+        (submitted after its own due_date -- was_late is derived from
+        submitted_at vs. due_date, not a spent token, since a midterm's
+        late recovery is never token-gated); entry B is submitted on time,
+        nowhere near entry A's due_date. Entry B's transcript row must NOT
+        show (LATE).
         """
         monkeypatch.setenv("USER_EMAIL", TEST_PRIMARY)
         from app.config import get_settings
@@ -453,10 +456,13 @@ class TestFullEntryLifecycleIntegration:
             upload.id, 50.0, "Chapter 1 — A",
         )
         db.commit()
-        assessment_a, _ = make_assessment(db, entry_a, status=AssessmentStatus.completed)
+        # due_offset_days=-2: due_date already 2 days in the past, so the
+        # submission made "now" by make_submission() below is genuinely late.
+        assessment_a, _ = make_assessment(
+            db, entry_a, status=AssessmentStatus.completed, due_offset_days=-2,
+        )
         submission_a = make_submission(db, assessment_a)
         make_grade(db, submission_a, mastery_score=90.0, score_earned=45.0, max_marks=50.0)
-        db.add(LateSubmissionToken(used_at=FIXED_NOW, used_by_assessment_id=assessment_a.id))
         db.commit()
 
         entry_b = make_curriculum(

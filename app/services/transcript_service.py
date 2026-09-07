@@ -10,7 +10,6 @@ from app.models.assessment import AssessmentStatus
 from app.models.curriculum import Curriculum, CurriculumEntryType
 from app.exceptions import NotFoundError
 from app.models.curriculum_upload import CurriculumUpload
-from app.models.late_submission_token import LateSubmissionToken
 from app.services.late_token_service import LateTokenService
 from app.services.syllabus_builder import _chapter_number
 
@@ -133,13 +132,13 @@ class TranscriptEntryRow:
     status_label: str      # compact form, e.g. "GRADED", "GRADED (LATE)", "MISSED–LATE (2)"
     points: Optional[float]  # None -> rendered as "—"
     retake_note: Optional[str] = None  # e.g. "retake, was 38.00"
-    was_late: bool = False  # graded from a late-token-covered submission —
+    was_late: bool = False  # graded from a submission made after due_date —
     # the transcript must show this distinctly, not render identically to
     # an on-time grade (a missed-then-late-graded entry is real history,
     # not something the final "completed" status alone can show — see
     # AssessmentStatus.late_submitted getting overwritten to `completed`
     # by GradingService.grade(), which loses the distinction unless it's
-    # re-derived here from LateSubmissionToken.used_by_assessment_id).
+    # re-derived here from Submission.submitted_at vs. Assessment.due_date).
 
 
 @dataclass
@@ -180,18 +179,23 @@ def _row_for(db: Session, curriculum: Curriculum) -> Optional[TranscriptEntryRow
     was_late = False
     if status == GRADED and final.submission is not None and final.submission.grade is not None:
         points = final.submission.grade.score_earned
-        # A token is spent to get access past a closed window, not for a
-        # normal fail-then-retry — so it may be recorded against an
-        # EARLIER attempt than the one that produced the final grade (a
-        # token-covered attempt that failed, followed by a free retake
-        # that passed). Checking only `final.id` misses that case; the
-        # entry is late if a token was used at ANY point in its history.
-        attempt_ids = [a.id for a in attempts]
-        was_late = (
-            db.query(LateSubmissionToken)
-            .filter(LateSubmissionToken.used_by_assessment_id.in_(attempt_ids))
-            .first()
-            is not None
+        # Derived from submitted_at vs. due_date, not a spent token — a
+        # midterm's late-submission recovery is never token-gated (see
+        # CurriculumUploadService.check_and_clear_hold /
+        # SubmissionService.create()), so a token record can no longer be
+        # assumed to exist just because a submission was late. This also
+        # generalizes correctly for the token-gated assessment-type case,
+        # since a late submission is always after due_date regardless of
+        # whether a token was spent to allow it.
+        #
+        # Checked across every attempt, not just `final`: the late one may
+        # be an EARLIER attempt than the one that produced the final grade
+        # (a late attempt that failed, followed by an on-time-within-its-
+        # own-window retake that passed) — the entry is late if ANY
+        # attempt in its history was.
+        was_late = any(
+            a.submission is not None and a.submission.submitted_at > a.due_date
+            for a in attempts
         )
 
     if final is not None and final.attempt_number > 1:

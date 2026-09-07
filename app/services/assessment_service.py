@@ -451,7 +451,10 @@ class AssessmentService:
             InvalidStateError: not currently expired-this-month (already
                                 graded, still within its normal window,
                                 on hold, or missed in an earlier calendar
-                                month), or no late-submission tokens remain.
+                                month), or (assessment-type entries only —
+                                midterms are never token-gated, month-end
+                                is their sole deadline) no late-submission
+                                tokens remain.
             LLMValidationError: if content generation fails after all retries.
         """
         curriculum = self.db.get(Curriculum, curriculum_id)
@@ -476,12 +479,12 @@ class AssessmentService:
                 f"Assessment {assessment.id!r} expired in a previous calendar "
                 "month — no longer late-eligible."
             )
-        if LateTokenService(self.db).get_balance(curriculum.upload_id) <= 0:
+        is_midterm = curriculum.entry_type == CurriculumEntryType.midterm
+        if not is_midterm and LateTokenService(self.db).get_balance(curriculum.upload_id) <= 0:
             raise InvalidStateError(
                 f"No late-submission tokens available for curriculum {curriculum_id!r}."
             )
 
-        is_midterm = curriculum.entry_type == CurriculumEntryType.midterm
         has_content = assessment.part1_text is not None if is_midterm else assessment.assessment_text is not None
         if not has_content:
             if is_midterm:

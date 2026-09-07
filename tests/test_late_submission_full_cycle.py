@@ -276,7 +276,9 @@ class TestMidtermFullLateCycle:
         db.expire_all()
         assessment = db.get(Assessment, assessment.id)
         assert assessment.status == AssessmentStatus.late_submitted
-        assert LateTokenService(db).get_balance(upload.id) == balance_before - 1
+        # Midterms are never token-gated — a late midterm-exam submission
+        # costs nothing, unlike a late assessment-type submission.
+        assert LateTokenService(db).get_balance(upload.id) == balance_before
 
         # ── Item 2: fails grading -> free two-part retake, no 2nd token ─
         _patch_grading_job(monkeypatch, FakeLLMBelowThreshold())
@@ -299,7 +301,7 @@ class TestMidtermFullLateCycle:
         attempt2 = attempts[1]
         assert attempt2.part1_text is not None  # regenerated two-part retest
         assert attempt2.part2_text is not None
-        assert LateTokenService(db).get_balance(upload.id) == balance_before - 1  # unchanged
+        assert LateTokenService(db).get_balance(upload.id) == balance_before  # still untouched
 
         # ── Item 3: passes the retake -> transcript shows (LATE) ────────
         attempt2.status = AssessmentStatus.active

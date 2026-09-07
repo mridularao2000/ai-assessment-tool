@@ -407,11 +407,10 @@ class TestPendingResourcesPatch:
     def test_fill_all_slots_clears_hold(self, db, seed_raw):
         service = CurriculumUploadService(db, RecordingEmailAdapter(), _scheduler(db))
         upload = service.ingest(seed_raw, "curriculum_seed.json")
-        # A held midterm's completion_date has already passed by
-        # construction, so clearing it now is a late recovery — same
-        # token-gated monthly window as a late assessment submission (see
-        # CurriculumUploadService.check_and_clear_hold).
-        LateTokenService(db).grant_monthly(upload.id)
+        # Midterms are never token-gated (see
+        # CurriculumUploadService.check_and_clear_hold) — deliberately no
+        # grant_monthly() call here, to confirm clearing needs nothing
+        # from the token pool at all.
 
         db.expire_all()
         pm_system = (
@@ -432,20 +431,20 @@ class TestPendingResourcesPatch:
         )
         assert updated.resources_hold is False
 
-    def test_fill_all_slots_without_a_token_stays_held(self, db, seed_raw):
-        """Same fill, but this upload's pool is exhausted — the hold must
-        NOT clear, since resources_hold is only set once completion_date
-        has already passed (a held midterm is, by construction, always a
-        late recovery). ingest() now auto-grants 2 tokens to a fresh
-        upload's pool (see CurriculumUploadService.ingest), so to exercise
-        the zero-balance case we drain the pool it was just given, standing
-        in for both tokens already having been spent elsewhere this month."""
+    def test_fill_all_slots_clears_even_with_zero_tokens_available(self, db, seed_raw):
+        """Same fill, but this upload's pool is fully drained first — the
+        hold must still clear. Midterms are never token-gated, unlike a
+        late assessment/midterm-exam submission, so an empty pool must not
+        block this at all (ingest() auto-grants 2 tokens to a fresh
+        upload's pool — see CurriculumUploadService.ingest — so those are
+        drained here to exercise the true zero-balance case)."""
         service = CurriculumUploadService(db, RecordingEmailAdapter(), _scheduler(db))
         upload = service.ingest(seed_raw, "curriculum_seed.json")
         db.query(LateSubmissionToken).filter(
             LateSubmissionToken.curriculum_upload_id == upload.id
         ).delete()
         db.commit()
+        assert LateTokenService(db).get_balance(upload.id) == 0
 
         db.expire_all()
         pm_system = (
@@ -459,8 +458,9 @@ class TestPendingResourcesPatch:
             pm_system.id,
             {slugs[0]: "a", slugs[1]: "b", slugs[2]: "c"},
         )
-        assert updated.resources_hold is True
-        assert updated.assessments == []  # window never opened
+        assert updated.resources_hold is False
+        assert len(updated.assessments) == 1
+        assert LateTokenService(db).get_balance(upload.id) == 0
 
     def test_unknown_slot_raises(self, db, seed_raw):
         service = CurriculumUploadService(db, RecordingEmailAdapter(), _scheduler(db))

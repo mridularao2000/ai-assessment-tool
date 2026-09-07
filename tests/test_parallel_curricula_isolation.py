@@ -68,6 +68,15 @@ class TestParallelCurriculaIsolation:
 
         monkeypatch.setattr("app.services.transcript_service.datetime", _FixedDateTime)
         monkeypatch.setattr("app.services.submission_service.utcnow", lambda: FIXED_NOW)
+        # was_late is now derived from Submission.submitted_at vs.
+        # Assessment.due_date (not a spent token — see
+        # transcript_service._row_for()), so submitted_at's own default
+        # (a separate name bound in app.models.submission, not affected by
+        # the submission_service patch above) must be pinned to the same
+        # fictional "now" too, or a submission made "on time" against a
+        # FIXED_NOW-scheduled due_date would spuriously compare as late
+        # against the real wall clock.
+        monkeypatch.setattr("app.models.submission.utcnow", lambda: FIXED_NOW)
 
         seed_prompt_templates(db)
 
@@ -146,6 +155,16 @@ class TestParallelCurriculaIsolation:
             submission_type=SubmissionType.text,
             text_content="On-time answer, curriculum two.",
         )
+        # SHARED_COMPLETION_DATE is a fixed past date so assessment_one's
+        # expire+late-submit path is real regardless of which "now" is in
+        # effect — but that also puts assessment_two's due_date before
+        # every clock this test uses (real wall-clock and FIXED_NOW
+        # alike), so its default submitted_at can't land genuinely
+        # "on time" no matter how utcnow is patched. Pin it directly to
+        # when the exam was actually sent (well before its own due_date)
+        # to make "on time" concrete rather than relying on status alone.
+        submission_two.submitted_at = assessment_two.scheduled_at
+        db.commit()
         db.expire_all()
         assert token_svc.get_balance(upload_one.id) == 1  # unchanged by Two's activity
         assert token_svc.get_balance(upload_two.id) == 2  # unchanged — no token needed

@@ -305,9 +305,13 @@ def trigger_late_send(
     """UI-facing trigger for a 'Missed — Late-Eligible' entry: generates
     exam content if it hasn't been generated yet, and (re)sends the exam
     email — the same generation/send path an on-time exam gets
-    automatically, just entered late. Does not spend a token itself or
-    return one; the student submits normally once the email arrives,
-    which is where the token actually gets spent."""
+    automatically, just entered late. Never spends a token itself or
+    returns one; the student submits normally once the email arrives. For
+    an assessment-type entry, that submission is where a token actually
+    gets spent (this endpoint only checks one is available first, so a
+    click doesn't burn an LLM call + email send for nothing) — a
+    midterm-type entry is never token-gated at all, here or at
+    submission."""
     try:
         assessment = assessment_svc.trigger_late_send(curriculum_id, email_svc)
     except NotFoundError as exc:

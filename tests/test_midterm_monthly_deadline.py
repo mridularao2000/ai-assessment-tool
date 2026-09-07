@@ -1,15 +1,16 @@
-"""Part 3: the same token-gated monthly deadline that already applies to
-missed Assessments now applies to a held Midterm's pending_completion.
+"""Part 3: the same monthly deadline that already applies to missed
+Assessments now applies to a held Midterm's pending_completion — but
+unlike a late assessment/midterm-exam submission (SubmissionService.
+create(), AssessmentService.trigger_late_send()), clearing a held
+midterm's project resources is never token-gated.
 
 A held midterm's completion_date has, by construction, already passed
 (resources_hold is only ever set once completion_date <= today — see
 CurriculumUploadService._create_entry) — so clearing it is always a late
-recovery, gated exactly like SubmissionService.create() gates a late
-assessment submission:
-  - completion_date's calendar month == today's month: clearing spends one
-    late-submission token from the entry's own pool. No token -> stays
-    held.
-  - a LATER calendar month: permanently unscoreable, no token can help —
+recovery, but a free one:
+  - completion_date's calendar month == today's month: clearing succeeds
+    unconditionally, no token needed or spent.
+  - a LATER calendar month: permanently unscoreable regardless of tokens —
     reusing transcript_service.MISSED_NO_SCORE verbatim, the same terminal
     state a permanently-missed assessment gets, not a distinct label. GPA
     and the daily recheck job both pick this up for free, since they
@@ -90,9 +91,16 @@ def _service(db):
     return CurriculumUploadService(db, RecordingEmailAdapter(), SchedulerService(db, FakeScheduler()))
 
 
-class TestCheckAndClearHoldTokenGate:
+class TestCheckAndClearHoldNoTokenGate:
 
-    def test_same_month_with_token_clears_and_spends_it(self, db):
+    def test_same_month_clears_without_spending_a_token(self, db):
+        """Midterms are never token-gated — clearing a held midterm's
+        project resources costs nothing, unlike a late assessment or late
+        midterm-exam submission (SubmissionService.create(),
+        AssessmentService.trigger_late_send()). Month-end is the only
+        deadline. Verified with a nonzero balance here so a regression
+        that reintroduces spending would be caught by the balance
+        assertion, not just by "it cleared."""
         upload = _make_upload(db)
         curriculum = _held_midterm(db, upload, completion_date=date.today() - timedelta(days=5))
         LateTokenService(db).grant_monthly(upload.id)
@@ -103,24 +111,25 @@ class TestCheckAndClearHoldTokenGate:
         assert cleared is True
         assert curriculum.resources_hold is False
         assert len(curriculum.assessments) == 1
-        assert LateTokenService(db).get_balance(upload.id) == balance_before - 1
-        # The token is tied to the assessment it unlocked, same audit
-        # trail a late assessment submission gets.
-        spent = LateTokenService(db).list_unused_tokens(upload.id)
-        assert curriculum.assessments[0].id not in spent  # sanity: it's not "unused"
+        assert LateTokenService(db).get_balance(upload.id) == balance_before
 
-    def test_same_month_without_a_token_stays_held(self, db):
+    def test_same_month_clears_even_with_zero_tokens_available(self, db):
+        """The defining behavior of the no-token-gate rule: an empty pool
+        (no grant_monthly() call — balance starts at 0) must not block
+        clearing at all, proving the check is genuinely gone rather than
+        just usually satisfied."""
         upload = _make_upload(db)
         curriculum = _held_midterm(db, upload, completion_date=date.today() - timedelta(days=5))
-        # No grant_monthly() call — pool starts at 0.
+        assert LateTokenService(db).get_balance(upload.id) == 0
 
         cleared = _service(db).check_and_clear_hold(curriculum)
 
-        assert cleared is False
-        assert curriculum.resources_hold is True
-        assert curriculum.assessments == []
+        assert cleared is True
+        assert curriculum.resources_hold is False
+        assert len(curriculum.assessments) == 1
+        assert LateTokenService(db).get_balance(upload.id) == 0
 
-    def test_month_already_passed_is_permanently_blocked_even_with_a_token(self, db):
+    def test_month_already_passed_is_permanently_blocked_regardless_of_tokens(self, db):
         upload = _make_upload(db)
         last_month = date.today().replace(day=1) - timedelta(days=1)
         curriculum = _held_midterm(db, upload, completion_date=last_month)
@@ -132,8 +141,9 @@ class TestCheckAndClearHoldTokenGate:
         assert cleared is False
         assert curriculum.resources_hold is True
         assert curriculum.assessments == []
-        # No token was spent trying — the block is unconditional, not a
-        # failed attempt that happened to also cost nothing.
+        # Confirms the month check runs (and blocks) before tokens ever
+        # come into it — trivially true now that tokens play no role at
+        # all, but still worth asserting explicitly.
         assert LateTokenService(db).get_balance(upload.id) == balance_before
 
     def test_slots_still_incomplete_is_unaffected_by_the_new_gate(self, db):

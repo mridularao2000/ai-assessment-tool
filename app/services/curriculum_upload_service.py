@@ -793,26 +793,23 @@ class CurriculumUploadService:
 
     def check_and_clear_hold(self, curriculum: Curriculum) -> bool:
         """Clear resources_hold if every pending slot is now filled AND
-        the late-submission grace window still allows it, then
-        immediately schedule its exam window from today (not the original
-        completion_date), per spec.
+        it's still within the due month, then immediately schedule its
+        exam window from today (not the original completion_date), per
+        spec.
 
-        A held midterm's completion_date has, by construction, already
-        passed the moment resources_hold is set (see _create_entry /
-        recheck_pending_midterms_job) — so clearing it is always a late
-        recovery, gated the same way SubmissionService.create() gates a
-        late submission for an expired assessment:
+        Midterms are never token-gated — unlike a late assessment
+        submission (SubmissionService.create()) or a late midterm exam
+        submission (also SubmissionService.create(), and the gate in
+        AssessmentService.trigger_late_send()), clearing a held midterm's
+        project resources costs nothing. The only deadline is the
+        calendar month itself:
           - target_completion_date's calendar month == today's month:
-            clearing spends one late-submission token from this entry's
-            pool (upload-scoped, same pool late assessment submissions
-            use). No token available -> stays held (caller/UI sees
-            resources_hold still True; a manual re-check or a future
-            grant can succeed later, same month).
-          - a LATER calendar month: permanently unscoreable, no token can
-            recover it — see transcript_service.display_status, which
-            classifies this exact state as MISSED_NO_SCORE, "same
-            terminal state as a permanently-missed assessment" by
-            explicit design, not a distinct label.
+            clears unconditionally.
+          - a LATER calendar month: permanently unscoreable — see
+            transcript_service.display_status, which classifies this
+            exact state as MISSED_NO_SCORE, "same terminal state as a
+            permanently-missed assessment" by explicit design, not a
+            distinct label.
 
         Returns True if this call flipped resources_hold off. Shared by
         fill_pending_resources() and the daily recheck job so a manual
@@ -833,14 +830,9 @@ class CurriculumUploadService:
             # Permanently past its grace month — see display_status().
             return False
 
-        late_tokens = LateTokenService(self.db)
-        if late_tokens.get_balance(curriculum.upload_id) <= 0:
-            return False
-
         curriculum.resources_hold = False
         self.db.commit()
-        assessment = self._schedule_entry_assessment(curriculum, today)
-        late_tokens.spend(assessment.id, curriculum.upload_id)
+        self._schedule_entry_assessment(curriculum, today)
         self.db.commit()
         return True
 

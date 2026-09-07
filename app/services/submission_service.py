@@ -67,11 +67,14 @@ class SubmissionService:
           2. Verify token via token_auth.verify_submission_token.
              Raise InvalidTokenError if verification fails.
           3. Verify Assessment.status == active, OR status == expired AND
-             due_date falls in the current calendar month AND a
-             late-submission token is available (spends one token and marks
-             the submission late). Raise InvalidStateError otherwise — an
-             assessment that expired in an earlier calendar month is no
-             longer late-eligible even if tokens remain.
+             due_date falls in the current calendar month (marks the
+             submission late). For an assessment-type entry, a
+             late-submission token must also be available and is spent;
+             a midterm-type entry is never token-gated here — month-end
+             is its sole deadline, matching check_and_clear_hold()'s
+             project-resources gate. Raise InvalidStateError otherwise —
+             an assessment that expired in an earlier calendar month is
+             no longer late-eligible even if tokens remain.
           4. Verify part1_text_content is present iff the entry is a Midterm.
           5. Resolve file_path for submission_type == file:
                - Resolve settings.uploads_dir, create directory if absent.
@@ -102,6 +105,8 @@ class SubmissionService:
         # Each curriculum_upload has its own token pool (None = standalone).
         upload_id = assessment.curriculum.upload_id
 
+        is_midterm = assessment.curriculum.entry_type == CurriculumEntryType.midterm
+
         is_late = False
         if assessment.status == AssessmentStatus.expired:
             now = utcnow()
@@ -110,7 +115,10 @@ class SubmissionService:
                     f"Assessment {assessment_id!r} expired in a previous "
                     "calendar month — no longer late-eligible."
                 )
-            if self.late_token_service.get_balance(upload_id) <= 0:
+            # Midterms are never token-gated — month-end is their sole
+            # deadline (matches check_and_clear_hold()'s project-resources
+            # gate, which was made token-free for the same reason).
+            if not is_midterm and self.late_token_service.get_balance(upload_id) <= 0:
                 raise InvalidStateError(
                     f"Assessment {assessment_id!r} has expired and no "
                     "late-submission tokens are available."
@@ -127,7 +135,6 @@ class SubmissionService:
                 f"Assessment {assessment_id!r} already has a submission."
             )
 
-        is_midterm = assessment.curriculum.entry_type == CurriculumEntryType.midterm
         if is_midterm and not (part1_text_content and part1_text_content.strip()):
             raise InvalidStateError(
                 f"Assessment {assessment_id!r} is a Midterm — part1_text_content "
@@ -155,7 +162,8 @@ class SubmissionService:
         self.db.flush()  # populate submission.id before status transition
 
         if is_late:
-            self.late_token_service.spend(assessment_id, upload_id)
+            if not is_midterm:
+                self.late_token_service.spend(assessment_id, upload_id)
             assessment.status = AssessmentStatus.late_submitted
         else:
             assessment.status = AssessmentStatus.submitted
