@@ -173,6 +173,60 @@ class _CallBudget:
         return self.spent >= self.ceiling
 
 
+def _repair_unescaped_inner_quotes(text: str) -> str:
+    """Best-effort repair for a real, observed tool-path mistake: Claude
+    writing a literal `"` inside a JSON string value — typically markdown
+    emphasis like `**"Proceed to Delivery"**` — instead of escaping it as
+    `\\"`. A real, unescaped quote makes json.loads() treat it as the
+    string's end, so parsing then trips on whatever follows.
+
+    Walks the text tracking whether we're inside a string. On each `"`
+    encountered while inside one, peeks past any whitespace at the next
+    character: if it's one of `, } ] :` (or end of input), this quote is
+    treated as a genuine string terminator; otherwise it's treated as an
+    inner, unescaped quote and is escaped instead, and scanning continues
+    within the same string.
+
+    This is inherently a heuristic, not a general JSON repair — a quote
+    that's both an intentional inner quote AND immediately followed by
+    one of those characters (e.g. an actual quoted comma) would be
+    misread as the terminator. It is only ever tried as a fallback after
+    a normal json.loads() has already failed, never in the successful
+    case, so it can't make a valid response invalid.
+    """
+    result: list[str] = []
+    in_string = False
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if in_string:
+            if ch == "\\" and i + 1 < n:
+                result.append(ch)
+                result.append(text[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                j = i + 1
+                while j < n and text[j] in " \t\r\n":
+                    j += 1
+                if j >= n or text[j] in ",}]:":
+                    in_string = False
+                    result.append(ch)
+                else:
+                    result.append('\\"')
+                i += 1
+                continue
+            result.append(ch)
+            i += 1
+        else:
+            if ch == '"':
+                in_string = True
+            result.append(ch)
+            i += 1
+    return "".join(result)
+
+
 class AnthropicLLMAdapter:
     """LLMInterface implementation using Anthropic Claude via the official SDK."""
 
@@ -298,6 +352,28 @@ class AnthropicLLMAdapter:
         try:
             return json.loads(stripped)
         except json.JSONDecodeError as exc:
+            # A second, independent tool-path mistake (confirmed via a real
+            # production incident, curriculum b9af6768: markdown emphasis
+            # like **"Proceed to Delivery"** written with a literal `"`
+            # instead of `\"`) — the model closes a string value early,
+            # then the parser trips on whatever follows. This is a
+            # different failure from the fence-detection one above (that
+            # one is about WHERE the JSON starts; this one is about
+            # whether its contents are valid once found), so retry once
+            # through a best-effort repair rather than failing immediately.
+            repaired = _repair_unescaped_inner_quotes(stripped)
+            if repaired != stripped:
+                try:
+                    return json.loads(repaired)
+                except json.JSONDecodeError as repaired_exc:
+                    # The repair got further (or it wouldn't have produced
+                    # a different failure) but still didn't fully succeed
+                    # — report ITS failure, not the original's. The
+                    # original position is, by construction, already
+                    # fixed; repeating it here would misdirect whoever
+                    # reads this diagnostic toward an already-solved
+                    # problem instead of whatever remains.
+                    exc = repaired_exc
             raise LLMValidationError(f"Response is not valid JSON: {exc}\n\nRaw: {text}") from exc
 
     def _render(self, template_body: str, **kwargs: Any) -> str:

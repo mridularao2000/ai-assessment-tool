@@ -26,6 +26,7 @@ from app.adapters.anthropic_llm import (
     WEB_SEARCH_TOOL,
     AnthropicLLMAdapter,
     _estimate_cost_usd,
+    _repair_unescaped_inner_quotes,
 )
 from app.interfaces.llm import (
     AssessmentGenerationRequest,
@@ -170,21 +171,20 @@ class TestParseJsonToolPathNarration:
         That was missed by the earlier diagnosis, which read the content
         for plausibility but never actually ran it through json.loads.
 
-        So this fixture can't prove a full successful parse end-to-end —
-        but it does prove the specific bug this fix targets is gone: the
-        failure is no longer "Expecting value: line 1 column 1 (char 0)"
-        (fence never found, json.loads called on raw narration). It now
-        correctly locates and enters the fenced JSON block, and fails
-        *inside* it with a normal, specific JSONDecodeError pointing at the
-        real syntax problem — proof the fence was found and stripped this
-        time, not that everything about this response is fine.
+        Originally (before the quote-repair fix below existed) this
+        fixture could only prove the fence-detection half worked — it
+        still failed *inside* the JSON on the escaping bug. Now that
+        _repair_unescaped_inner_quotes() exists (added after a second,
+        near-identical incident — curriculum b9af6768), this exact real
+        capture parses successfully end-to-end, recovering the full
+        original assessment+rubric content that was always valid, just
+        unreachable by the parser that existed at the time.
         """
         text = (_FIXTURES_DIR / "perfopt_narration_before_json_response.txt").read_text()
-        with pytest.raises(LLMValidationError) as exc_info:
-            adapter._parse_json(text)
-        message = str(exc_info.value)
-        assert "line 1 column 1 (char 0)" not in message
-        assert "Expecting ',' delimiter" in message
+        result = adapter._parse_json(text)
+        assert result["duration_minutes"] == 75
+        assert len(result["assessment_text"]) > 1000
+        assert len(result["rubric"]) > 1000
 
     def test_narration_before_valid_fenced_json_parses_successfully(self, adapter):
         """Same narration-then-fence shape as the real captured failure
@@ -240,6 +240,83 @@ class TestParseJsonToolPathNarration:
         unaffected by the fence-search rewrite."""
         result = adapter._parse_json('{"key": "value", "n": 42}')
         assert result == {"key": "value", "n": 42}
+
+
+class TestRepairUnescapedInnerQuotes:
+    """Regression coverage for a second, independent tool-path defect,
+    distinct from the narration-prefix one above: Claude writing a
+    literal `"` inside a string value (typically markdown emphasis like
+    `**"Proceed to Delivery"**`) instead of escaping it as `\\"`. The
+    unescaped quote makes json.loads() treat it as the string's end, so
+    parsing trips on whatever follows — confirmed as the real cause of a
+    production incident (curriculum b9af6768, "State Management —
+    Context, Lifting State"), via a real captured Anthropic response
+    reproducing json.loads()'s exact reported position
+    (line 2, column 1406, char 1407) byte-for-byte.
+    """
+
+    def test_real_captured_incident_error_moves_past_the_entire_buggy_field(self, adapter):
+        """Uses the EXACT raw response text captured from the real
+        production incident — not an approximation. This capture is
+        itself truncated (Render's logged line ends mid-document, before
+        the rubric/duration_minutes fields or the closing fence), so it
+        can't be asserted to fully parse. What it CAN prove: the repair
+        pass gets cleanly past the specific bug that actually occurred —
+        the failure position moves from char 1407 (the unescaped quote
+        before "Proceed") all the way to the end of the captured text
+        (char 5072, "Expecting property name" — i.e. ran out of input,
+        not the original bug), confirming the fix addresses the real,
+        confirmed defect rather than a superficially similar one.
+        """
+        text = (_FIXTURES_DIR / "state_mgmt_unescaped_quote_response.txt").read_text()
+        with pytest.raises(LLMValidationError) as exc_info:
+            adapter._parse_json(text)
+        message = str(exc_info.value)
+        assert "column 1406" not in message
+        assert "char 1407" not in message
+
+    def test_markdown_emphasis_quote_parses_successfully_when_document_is_complete(self, adapter):
+        """Same bug shape as the real incident (an unescaped `"` inside a
+        markdown-emphasis phrase within a string value), but in an
+        otherwise-complete JSON document — isolates the repair itself
+        from the real capture's unrelated truncation, proving it recovers
+        a full, valid parse when nothing else is missing."""
+        text = (
+            "```json\n"
+            '{"assessment_text": "Click the **"Proceed to Delivery"** '
+            'button to continue.", "rubric": "Full marks for correctly '
+            'identifying the button.", "duration_minutes": 90}\n'
+            "```"
+        )
+        result = adapter._parse_json(text)
+        assert result == {
+            "assessment_text": 'Click the **"Proceed to Delivery"** button to continue.',
+            "rubric": "Full marks for correctly identifying the button.",
+            "duration_minutes": 90,
+        }
+
+    def test_correctly_escaped_quotes_are_unaffected(self, adapter):
+        """The repair pass must be a pure fallback, never invoked (and
+        never able to corrupt anything) when the JSON is already valid —
+        properly escaped inner quotes must round-trip unchanged."""
+        text = '{"assessment_text": "Click the **\\"Proceed\\"** button."}'
+        result = adapter._parse_json(text)
+        assert result == {"assessment_text": 'Click the **"Proceed"** button.'}
+
+    def test_repair_is_a_noop_on_already_valid_json(self):
+        """Direct unit check on the repair function itself: valid JSON
+        (with correctly escaped quotes) must come back byte-for-byte
+        identical, since _parse_json only ever calls this as a fallback
+        after json.loads() has already failed once."""
+        text = '{"a": "already \\"escaped\\" correctly", "b": 1}'
+        assert _repair_unescaped_inner_quotes(text) == text
+
+    def test_genuinely_malformed_json_still_fails_cleanly_after_repair(self, adapter):
+        """The repair pass must not paper over a response that's broken
+        for an unrelated reason — it should still raise LLMValidationError,
+        not silently return garbage."""
+        with pytest.raises(LLMValidationError, match="not valid JSON"):
+            adapter._parse_json('{"key": "value" "missing_comma": 1}')
 
 
 # ── _render ───────────────────────────────────────────────────────────────────
