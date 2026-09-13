@@ -42,6 +42,7 @@ from app.interfaces.llm import (
     AssessmentGenerationResult,
     CurriculumAnalysisRequest,
     CurriculumAnalysisResult,
+    GithubFetchRequest,
     GradingRequest,
     GradingResult,
     LLMToolBudgetExceededError,
@@ -254,7 +255,7 @@ class AnthropicLLMAdapter:
         tools is opt-in — omitted entirely for standalone call sites, so their
         request shape (and therefore response.content shape) is unchanged.
 
-        budget is opt-in too (only the 5 tool-enabled call sites pass one) —
+        budget is opt-in too (only the tool-enabled call sites pass one) —
         see _CallBudget. Checked BEFORE spending anything on this attempt,
         so an already-exhausted budget aborts without making another API
         call at all.
@@ -394,16 +395,16 @@ class AnthropicLLMAdapter:
         on LLMValidationError.
 
         max_attempts defaults to settings.llm_max_retries when omitted; the
-        5 tool-enabled call sites pass _TOOL_PATH_MAX_ATTEMPTS explicitly
+        tool-enabled call sites pass _TOOL_PATH_MAX_ATTEMPTS explicitly
         instead (see its docstring). budget_ceiling, when given, constructs
         one _CallBudget shared across every attempt in this call — also
         tool-enabled call sites only.
 
-        When budget_ceiling was given (i.e. this is one of the 5
+        When budget_ceiling was given (i.e. this is one of the
         tool-enabled call sites) and every attempt is exhausted, the final
         raise is LLMToolBudgetExceededError rather than the plain
         LLMValidationError from the last attempt — this is the one shared
-        point all 5 tool-enabled methods route through, so callers
+        point all tool-enabled methods route through, so callers
         (send_assessment_job) can catch it specifically and mark the row
         for manual diagnosis instead of leaving it silently retryable.
         """
@@ -629,6 +630,12 @@ class AnthropicLLMAdapter:
         return self._retry(_attempt, request)
 
     def grade_submission(self, request: GradingRequest) -> GradingResult:
+        # github_url is the only trigger for tool access here — text/file
+        # submissions keep the original no-tools path unchanged (no wasted
+        # tokens/latency fetching anything). Fetch-only (no web_search):
+        # the repo URL is already known from the submission, so there's
+        # nothing to discover, only to fetch beyond what github_ingestor
+        # already pre-fetched into submission_content.
         def _attempt(
             req: GradingRequest, attempt: int, budget: "_CallBudget | None" = None
         ) -> GradingResult:
@@ -640,8 +647,10 @@ class AnthropicLLMAdapter:
                 submission_content=req.submission_content,
             )
             if attempt > 0:
-                prompt += _RETRY_NUDGE_PLAIN
-            raw = self._call(prompt, max_tokens=4096)
+                prompt += _RETRY_NUDGE_TOOL_AWARE if req.github_url else _RETRY_NUDGE_PLAIN
+            tools = [WEB_FETCH_TOOL] if req.github_url else None
+            max_tokens = 8000 if req.github_url else 4096
+            raw = self._call(prompt, max_tokens=max_tokens, tools=tools, budget=budget)
             data = self._parse_json(raw)
             try:
                 mastery_score = float(data["mastery_score"])
@@ -655,7 +664,50 @@ class AnthropicLLMAdapter:
             except (KeyError, TypeError, ValueError) as exc:
                 raise LLMValidationError(f"grade_submission schema mismatch: {exc}\n\nData: {data}") from exc
 
+        if request.github_url:
+            return self._retry(
+                _attempt, request,
+                max_attempts=_TOOL_PATH_MAX_ATTEMPTS, budget_ceiling=self._tool_call_budget_tokens,
+            )
         return self._retry(_attempt, request)
+
+    def fetch_github_content(self, request: GithubFetchRequest) -> str:
+        """Fetch each of request.targets via web_fetch (fetch-only, no
+        search — github_ingestor already resolved every target to a
+        directly-fetchable raw URL) and return their content labeled by
+        path, for embedding as grading evidence.
+
+        Routed through the same shared, budget-capped _call()/_retry()
+        path as every other tool-enabled call site — WEB_FETCH_TOOL
+        carries the same allowed_callers/max_uses/max_content_tokens caps
+        here as everywhere else in this file. Never a direct requests/
+        httpx call.
+        """
+        def _attempt(
+            req: GithubFetchRequest, attempt: int, budget: "_CallBudget | None" = None
+        ) -> str:
+            target_lines = "\n".join(f"- {label}: {url}" for label, url in req.targets.items())
+            prompt = (
+                "Fetch the content of each of the following files using the web_fetch "
+                "tool (one fetch per URL). Then respond with the raw content of each "
+                "file, verbatim, clearly labeled in exactly this format, one block per "
+                "file:\n\n"
+                "=== <label> ===\n"
+                "<raw file content>\n\n"
+                "If a file cannot be fetched (404, private repo, network error), write "
+                "\"=== <label> ===\\n(fetch failed: <short reason>)\" for that file "
+                "instead of stopping — still attempt every other file. Do not "
+                "summarize, paraphrase, or omit content — reproduce each file verbatim.\n\n"
+                f"Files to fetch:\n{target_lines}"
+            )
+            if attempt > 0:
+                prompt += _RETRY_NUDGE_TOOL_AWARE
+            return self._call(prompt, max_tokens=8000, tools=[WEB_FETCH_TOOL], budget=budget)
+
+        return self._retry(
+            _attempt, request,
+            max_attempts=_TOOL_PATH_MAX_ATTEMPTS, budget_ceiling=self._tool_call_budget_tokens,
+        )
 
     def grade_midterm_submission(self, request: MidtermGradingRequest) -> MidtermGradingResult:
         resources = filter_fetchable_resources(request.resources or [])

@@ -8,8 +8,13 @@ from app.models.submission import SubmissionType
 class SubmissionCreate(BaseModel):
     """Request body for POST /api/v1/submissions.
 
-    Exactly one content field must be provided, matching submission_type:
-      - github_url  → github_url must be set; text_content must be absent
+    Content fields, matching submission_type:
+      - github_url  → github_url must be set; text_content MAY also be set
+                      (a written explanation + explicit file-path
+                      references alongside the repo URL — see
+                      app.ingestors.github_ingestor). The fetched repo
+                      content is the primary grading evidence; text_content
+                      is the student's own explanation.
       - text        → text_content must be set; github_url must be absent
       - file        → neither github_url nor text_content should be set;
                       the route validates that an UploadFile was received
@@ -41,10 +46,10 @@ class SubmissionCreate(BaseModel):
                 raise ValueError(
                     "github_url is required when submission_type is 'github_url'"
                 )
-            if self.text_content:
-                raise ValueError(
-                    "text_content must not be set when submission_type is 'github_url'"
-                )
+            # text_content MAY also be set here — the one deliberate
+            # exception to "exactly one content field": a written
+            # explanation naming specific files, submitted alongside the
+            # repo URL those files get fetched from.
 
         elif t == SubmissionType.text:
             if not self.text_content:

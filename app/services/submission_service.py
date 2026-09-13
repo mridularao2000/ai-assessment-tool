@@ -154,7 +154,14 @@ class SubmissionService:
             assessment_id=assessment_id,
             submission_type=submission_type,
             github_url=github_url if submission_type == SubmissionType.github_url else None,
-            text_content=text_content if submission_type == SubmissionType.text else None,
+            # text_content is also kept for github_url submissions — the
+            # student's written explanation + file-path references
+            # submitted alongside the repo URL (see SubmissionCreate).
+            text_content=(
+                text_content
+                if submission_type in (SubmissionType.text, SubmissionType.github_url)
+                else None
+            ),
             file_path=file_path,
             part1_text_content=part1_text_content if is_midterm else None,
         )
