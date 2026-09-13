@@ -31,6 +31,7 @@ from app.adapters.anthropic_llm import (
 from app.interfaces.llm import (
     AssessmentGenerationRequest,
     CurriculumAnalysisRequest,
+    GithubFetchRequest,
     GradingRequest,
     LLMToolBudgetExceededError,
     LLMUnavailableError,
@@ -1417,6 +1418,134 @@ class TestGradeSubmission:
         _patch_create(adapter, anthropic.RateLimitError("429", response=_RESPONSE_429, body={}))
         with pytest.raises(LLMUnavailableError, match="rate limit"):
             adapter.grade_submission(self._req())
+
+
+class TestGradeSubmissionWebFetchGating:
+    """Fix 2: grade_submission() must attach WEB_FETCH_TOOL (fetch-only,
+    no web_search — the repo URL is already known) when the request came
+    from a github_url submission, and must NOT attach any tool for
+    text/file submissions — the existing no-tools path stays unchanged."""
+
+    _TEMPLATE = (
+        "Grade this:\nAssessment: {assessment_text}\nRubric: {rubric}\n"
+        "Curriculum: {curriculum_content}\nSubmission: {submission_content}"
+    )
+
+    def _req(self, github_url: str | None = None) -> GradingRequest:
+        return GradingRequest(
+            assessment_text="Explain async/await.",
+            rubric="Full marks for correctness.",
+            curriculum_content="Python async notes.",
+            submission_content="async/await allows non-blocking I/O.",
+            prompt_template_body=self._TEMPLATE,
+            github_url=github_url,
+        )
+
+    def _good_json(self) -> str:
+        return json.dumps({
+            "mastery_score": 88.0, "weak_areas": [], "overall_feedback": "Good.",
+        })
+
+    def test_github_url_submission_gets_web_fetch_tool(self, adapter):
+        mock = _patch_create(adapter, self._good_json())
+        adapter.grade_submission(self._req(github_url="https://github.com/example/repo"))
+        assert mock.call_args[1]["tools"] == [WEB_FETCH_TOOL]
+
+    def test_text_submission_gets_no_tools(self, adapter):
+        mock = _patch_create(adapter, self._good_json())
+        adapter.grade_submission(self._req(github_url=None))
+        assert "tools" not in mock.call_args[1] or mock.call_args[1]["tools"] is None
+
+    def test_github_url_submission_does_not_use_web_search(self, adapter):
+        """Fetch only, never search — the URL is already known."""
+        mock = _patch_create(adapter, self._good_json())
+        adapter.grade_submission(self._req(github_url="https://github.com/example/repo"))
+        assert WEB_SEARCH_TOOL not in mock.call_args[1]["tools"]
+
+    def test_github_url_submission_uses_tool_path_attempt_cap(self, adapter):
+        """Tool-enabled grading gets the tighter 2-attempt cap, same as
+        every other tool-enabled call site."""
+        bad = "not json at all"
+        mock = _patch_create(adapter, bad, bad, bad)
+        with pytest.raises(LLMValidationError):
+            adapter.grade_submission(self._req(github_url="https://github.com/example/repo"))
+        assert mock.call_count == 2
+
+    def test_text_submission_still_gets_full_attempt_budget(self, adapter):
+        bad = "not json at all"
+        mock = _patch_create(adapter, bad, bad, bad)
+        with pytest.raises(LLMValidationError):
+            adapter.grade_submission(self._req(github_url=None))
+        assert mock.call_count == 3
+
+
+class TestFetchGithubContent:
+    """Fix 1: fetch_github_content must route through the same shared,
+    protected _call() path as every other tool-enabled call site — never
+    a direct requests/httpx call — carrying WEB_FETCH_TOOL's caps
+    (allowed_callers/max_uses/max_content_tokens) unchanged."""
+
+    def _req(self) -> GithubFetchRequest:
+        return GithubFetchRequest(
+            targets={
+                "README.md": "https://github.com/example/repo/raw/HEAD/README.md",
+                "src/foo.py": "https://github.com/example/repo/raw/HEAD/src/foo.py",
+            }
+        )
+
+    def test_uses_web_fetch_tool_via_shared_call_path(self, adapter):
+        """Confirms the fetch goes through adapter._call (which itself
+        calls self._client.messages.create) rather than any direct HTTP
+        client — the mocked SDK call receiving tools=[WEB_FETCH_TOOL] IS
+        the proof, since a bypassing implementation would never reach it."""
+        mock = _patch_create(adapter, "=== README.md ===\ncontent\n\n=== src/foo.py ===\nmore")
+        result = adapter.fetch_github_content(self._req())
+        assert mock.call_args[1]["tools"] == [WEB_FETCH_TOOL]
+        assert mock.call_args[1]["model"] == adapter._model
+        assert "README.md" in result
+
+    def test_does_not_use_web_search(self, adapter):
+        mock = _patch_create(adapter, "=== README.md ===\ncontent")
+        adapter.fetch_github_content(self._req())
+        assert WEB_SEARCH_TOOL not in mock.call_args[1]["tools"]
+
+    def test_target_urls_rendered_in_prompt(self, adapter):
+        mock = _patch_create(adapter, "=== README.md ===\ncontent")
+        adapter.fetch_github_content(self._req())
+        prompt = mock.call_args[1]["messages"][0]["content"]
+        assert "https://github.com/example/repo/raw/HEAD/README.md" in prompt
+        assert "https://github.com/example/repo/raw/HEAD/src/foo.py" in prompt
+
+    def test_returns_raw_text_without_json_parsing(self, adapter):
+        """Unlike the JSON-returning methods, this just returns _call's
+        extracted text verbatim — no schema to validate."""
+        _patch_create(adapter, "=== README.md ===\nplain labeled text, not JSON")
+        result = adapter.fetch_github_content(self._req())
+        assert result == "=== README.md ===\nplain labeled text, not JSON"
+
+    def test_exhaustion_raises_tool_budget_exceeded(self, adapter):
+        response = MagicMock()
+        response.content = [MagicMock(type="server_tool_use", name="web_fetch")]
+        response.usage = MagicMock(
+            input_tokens=500, output_tokens=100,
+            cache_creation_input_tokens=0, cache_read_input_tokens=0,
+        )
+        adapter._client.messages.create = MagicMock(return_value=response)
+        with pytest.raises(LLMToolBudgetExceededError):
+            adapter.fetch_github_content(self._req())
+
+    def test_makes_at_most_two_attempts(self, adapter):
+        response = MagicMock()
+        response.content = [MagicMock(type="server_tool_use", name="web_fetch")]
+        response.usage = MagicMock(
+            input_tokens=100, output_tokens=50,
+            cache_creation_input_tokens=0, cache_read_input_tokens=0,
+        )
+        mock = MagicMock(return_value=response)
+        adapter._client.messages.create = mock
+        with pytest.raises(LLMToolBudgetExceededError):
+            adapter.fetch_github_content(self._req())
+        assert mock.call_count == 2
 
 
 # ── grade_midterm_submission ──────────────────────────────────────────────────

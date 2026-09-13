@@ -266,6 +266,12 @@
                             placeholder="Answer Part 1's assignment questions here…"></textarea>
                 </div>
 
+                <div class="text-muted small mb-2">
+                  <div><strong>Coding questions:</strong> use GitHub repo URL + paste your explanation and specific file paths in the text field (both can be submitted together).</div>
+                  <div><strong>Written questions:</strong> use Text.</div>
+                  <div><strong>Single file:</strong> use File Upload.</div>
+                </div>
+
                 <div class="mb-3">
                   <label class="form-label" for="s_type" id="s_type_label">Submission Type</label>
                   <select class="form-select" id="s_type" onchange="toggleSubmissionType()">
@@ -276,7 +282,7 @@
                 </div>
 
                 <div id="s_text_section" class="sub-section mb-3">
-                  <label class="form-label" for="s_text">Your Answer</label>
+                  <label class="form-label" for="s_text" id="s_text_label">Your Answer</label>
                   <textarea class="form-control" id="s_text" rows="7"
                             placeholder="Write your answer here…"></textarea>
                 </div>
@@ -815,9 +821,21 @@ document.addEventListener('DOMContentLoaded', refreshLateTokenCount);
 
 function toggleSubmissionType() {
   const type = document.getElementById('s_type').value;
-  document.getElementById('s_text_section').classList.toggle('d-none',   type !== 'text');
+  // Text stays visible for both 'text' and 'github_url' — the two can be
+  // submitted together (explanation + file paths alongside the repo URL).
+  document.getElementById('s_text_section').classList.toggle('d-none',   type === 'file');
   document.getElementById('s_github_section').classList.toggle('d-none', type !== 'github_url');
   document.getElementById('s_file_section').classList.toggle('d-none',   type !== 'file');
+
+  const textLabel = document.getElementById('s_text_label');
+  const textArea = document.getElementById('s_text');
+  if (type === 'github_url') {
+    textLabel.textContent = 'Your Explanation (optional — name specific file paths to fetch them)';
+    textArea.placeholder = 'e.g. My retry logic is in src/components/CheckoutWizard.jsx…';
+  } else {
+    textLabel.textContent = 'Your Answer';
+    textArea.placeholder = 'Write your answer here…';
+  }
 }
 
 document.getElementById('submissionForm').addEventListener('submit', async (e) => {
@@ -856,6 +874,8 @@ document.getElementById('submissionForm').addEventListener('submit', async (e) =
     fd.append('text_content', document.getElementById('s_text').value);
   } else if (type === 'github_url') {
     fd.append('github_url', document.getElementById('s_github').value.trim());
+    const explanation = document.getElementById('s_text').value.trim();
+    if (explanation) fd.append('text_content', explanation);
   } else if (type === 'file') {
     fd.append('file', document.getElementById('s_file').files[0]);
   }

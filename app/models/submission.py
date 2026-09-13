@@ -33,8 +33,11 @@ class Submission(Base):
     submission_type: Mapped[SubmissionType] = mapped_column(
         Enum(SubmissionType), nullable=False
     )
-    # Exactly one of the three content fields is non-null, matching submission_type.
-    # Mutual exclusivity is enforced by the submission schema validator.
+    # For submission_type == file, file_path alone is set. For text,
+    # text_content alone is set. For github_url, github_url is always set
+    # and text_content MAY also be set (a written explanation submitted
+    # alongside the repo URL — see app.ingestors.github_ingestor). Enforced
+    # by the submission schema validator, not a DB constraint.
     # For a Midterm, these three represent PART 2 (the project) only.
     github_url: Mapped[Optional[str]] = mapped_column(Text, default=None)
     text_content: Mapped[Optional[str]] = mapped_column(Text, default=None)

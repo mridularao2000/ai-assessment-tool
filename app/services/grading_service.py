@@ -40,7 +40,11 @@ class GradingService:
           1. Load Submission with its Assessment and the Assessment's Curriculum.
              Verify Assessment.status is submitted or late_submitted.
           2. Resolve submission_content from Submission.submission_type:
-               github_url → github_ingestor.fetch_repo_content(submission.github_url)
+               github_url → github_ingestor.fetch_repo_content() (README +
+                            any file paths referenced in text_content),
+                            combined with text_content itself (the
+                            student's explanation) when both are present —
+                            see SubmissionType.github_url branch below.
                text       → submission.text_content (used directly)
                file       → read file bytes from submission.file_path on disk
              For a Midterm, this is Part 2's content — Part 1's is
@@ -91,13 +95,22 @@ class GradingService:
         # For a Midterm this is Part 2's content; for everything else it's
         # the whole submission.
         if submission.submission_type == SubmissionType.github_url:
-            try:
-                from app.ingestors.github_ingestor import fetch_repo_content
-                submission_content = fetch_repo_content(submission.github_url)
-            except Exception as exc:
-                raise IngestionError(
-                    f"Failed to fetch GitHub repo {submission.github_url!r}."
-                ) from exc
+            from app.ingestors.github_ingestor import fetch_repo_content
+
+            fetched_evidence = fetch_repo_content(
+                submission.github_url, self.llm, text_content=submission.text_content
+            )
+            if submission.text_content:
+                # Combined text + github_url submission (see
+                # SubmissionCreate.validate_exactly_one_content): the
+                # student's own explanation is the answer, the fetched
+                # repo content is the evidence to check it against.
+                submission_content = (
+                    f"Student's written explanation:\n{submission.text_content}\n\n"
+                    f"Fetched repository content (evidence):\n{fetched_evidence}"
+                )
+            else:
+                submission_content = fetched_evidence
         elif submission.submission_type == SubmissionType.text:
             submission_content = submission.text_content or ""
         else:
@@ -129,6 +142,11 @@ class GradingService:
                         curriculum_content=curriculum.extracted_content or "",
                         submission_content=submission_content,
                         prompt_template_body=prompt_template.body,
+                        github_url=(
+                            submission.github_url
+                            if submission.submission_type == SubmissionType.github_url
+                            else None
+                        ),
                     )
                 )
 

@@ -48,6 +48,7 @@ from app.interfaces.llm import (
     AssessmentGenerationResult,
     CurriculumAnalysisRequest,
     CurriculumAnalysisResult,
+    GithubFetchRequest,
     GradingRequest,
     GradingResult,
     MidtermGenerationRequest,
@@ -302,6 +303,11 @@ class FakeLLM:
             mastery_score=90.0,
             weak_areas=[],
             overall_feedback="Excellent understanding demonstrated.",
+        )
+
+    def fetch_github_content(self, req: GithubFetchRequest) -> str:
+        return "\n\n".join(
+            f"=== {label} ===\nFake fetched content for {label}." for label in req.targets
         )
 
     def grade_midterm_submission(self, req: MidtermGradingRequest) -> MidtermGradingResult:

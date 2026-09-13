@@ -155,6 +155,13 @@ class GradingRequest:
     submission_content is the resolved content string — plain text, GitHub
     repo text fetched by github_ingestor, or file contents read from disk.
     The service resolves the submission type before calling this method.
+    For a github_url submission, submission_content already carries the
+    pre-fetched README/referenced-file evidence (see github_ingestor) —
+    github_url is passed separately, purely to gate web_fetch tool access
+    for THIS grading call itself, so the grader can pull additional files
+    from the same, already-known repo if the pre-fetched evidence doesn't
+    cover something the rubric asks about. None for text/file submissions
+    (no tools attached, unchanged behavior).
     """
 
     assessment_text: str
@@ -162,6 +169,22 @@ class GradingRequest:
     curriculum_content: str
     submission_content: str
     prompt_template_body: str
+    github_url: Optional[str] = None
+
+
+@dataclass
+class GithubFetchRequest:
+    """Input to fetch_github_content.
+
+    targets maps a human-readable label (a file path, e.g. "README.md" or
+    "src/foo/Bar.jsx") to the raw, directly-fetchable URL github_ingestor
+    already resolved it to (normalizing whatever GitHub URL shape the
+    student submitted). The implementation fetches each target via
+    web_fetch and returns their content labeled by path — it does no
+    GitHub-specific URL parsing of its own.
+    """
+
+    targets: dict[str, str]
 
 
 @dataclass
@@ -419,6 +442,10 @@ class LLMInterface(Protocol):
     def grade_submission(
         self, request: GradingRequest
     ) -> GradingResult: ...
+
+    def fetch_github_content(
+        self, request: GithubFetchRequest
+    ) -> str: ...
 
     def grade_midterm_submission(
         self, request: MidtermGradingRequest

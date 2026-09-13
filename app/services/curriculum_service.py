@@ -285,10 +285,7 @@ class CurriculumService:
     def _fetch_github_repo(self, repo_url: str) -> str:
         try:
             from app.ingestors.github_ingestor import fetch_repo_content
-            return fetch_repo_content(repo_url)
-        except ImportError:
-            # Module not yet implemented — fall back to plain URL fetch.
-            return self._fetch_url(repo_url)
+            return fetch_repo_content(repo_url, self.llm)
         except Exception as exc:
             raise IngestionError(
                 f"Failed to fetch GitHub repo {repo_url!r}: {exc}"

@@ -22,6 +22,7 @@ from app.interfaces.llm import (
     AssessmentGenerationResult,
     CurriculumAnalysisRequest,
     CurriculumAnalysisResult,
+    GithubFetchRequest,
     GradingRequest,
     GradingResult,
     MidtermGenerationRequest,
@@ -104,6 +105,13 @@ class FakeLLMAdapter:
             mastery_score=92.0,
             weak_areas=[],
             overall_feedback="[FAKE_LLM] Canned passing grade — test mode, not real grading.",
+        )
+
+    def fetch_github_content(self, request: GithubFetchRequest) -> str:
+        return "\n\n".join(
+            f"=== {label} ===\n[FAKE_LLM] Canned content for {label} "
+            "(test mode, not a real fetch)."
+            for label in request.targets
         )
 
     def grade_midterm_submission(

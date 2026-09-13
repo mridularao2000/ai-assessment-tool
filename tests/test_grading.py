@@ -158,7 +158,29 @@ class TestGradingService:
         finally:
             get_settings.cache_clear()
 
-    def test_grade_github_url_submission_raises_ingestion_error(self, db, fake_llm):
+    def test_grade_github_url_submission_succeeds(self, db, fake_llm):
+        """github_ingestor now exists and fetches via the injected LLM
+        (FakeLLM.fetch_github_content — deterministic, no network) — a
+        github_url submission grades successfully, not an ImportError."""
+        seed_prompt_templates(db)
+        curriculum = make_curriculum(db)
+        assessment, _ = make_assessment(db, curriculum, status=AssessmentStatus.active)
+
+        submission = Submission(
+            id="github-submission-id",
+            assessment_id=assessment.id,
+            submission_type=SubmissionType.github_url,
+            github_url="https://github.com/example/some-repo",
+        )
+        assessment.status = AssessmentStatus.submitted
+        db.add(submission)
+        db.commit()
+
+        grade = GradingService(db, fake_llm).grade(submission.id)
+
+        assert grade.mastery_score == 90.0
+
+    def test_grade_github_url_invalid_host_raises_ingestion_error(self, db, fake_llm):
         from app.exceptions import IngestionError
 
         seed_prompt_templates(db)
@@ -169,15 +191,110 @@ class TestGradingService:
             id="github-submission-id",
             assessment_id=assessment.id,
             submission_type=SubmissionType.github_url,
-            github_url="https://github.com/example/nonexistent-repo",
+            github_url="https://gitlab.com/example/nonexistent-repo",
         )
         assessment.status = AssessmentStatus.submitted
         db.add(submission)
         db.commit()
 
-        # github_ingestor doesn't exist / can't fetch → IngestionError
+        # Not a recognized GitHub host → IngestionError before any fetch.
         with pytest.raises(IngestionError):
             GradingService(db, fake_llm).grade(submission.id)
+
+    def test_grade_github_url_llm_fetch_failure_raises_ingestion_error(self, db):
+        """A genuine fetch failure (network error, private repo, 404 —
+        simulated here via the LLM raising) must still surface as
+        IngestionError, not the underlying LLM exception."""
+        from app.exceptions import IngestionError
+        from app.interfaces.llm import GithubFetchRequest, LLMUnavailableError
+
+        class FakeLLMFetchFails(FakeLLM):
+            def fetch_github_content(self, req: GithubFetchRequest) -> str:
+                raise LLMUnavailableError("Claude API unreachable: simulated network error")
+
+        seed_prompt_templates(db)
+        curriculum = make_curriculum(db)
+        assessment, _ = make_assessment(db, curriculum, status=AssessmentStatus.active)
+
+        submission = Submission(
+            id="github-submission-id",
+            assessment_id=assessment.id,
+            submission_type=SubmissionType.github_url,
+            github_url="https://github.com/example/some-repo",
+        )
+        assessment.status = AssessmentStatus.submitted
+        db.add(submission)
+        db.commit()
+
+        with pytest.raises(IngestionError):
+            GradingService(db, FakeLLMFetchFails()).grade(submission.id)
+
+    def test_grade_combined_text_and_github_url_uses_both(self, db):
+        """Combined text_content + github_url submission: the grading
+        prompt sent to the LLM must contain both the student's written
+        explanation AND the fetched repo content — not just one."""
+        from app.interfaces.llm import GradingRequest, GradingResult
+
+        class FakeLLMCapturing(FakeLLM):
+            def __init__(self) -> None:
+                self.last_request: GradingRequest | None = None
+
+            def grade_submission(self, req: GradingRequest) -> GradingResult:
+                self.last_request = req
+                return GradingResult(
+                    mastery_score=90.0, weak_areas=[], overall_feedback="ok",
+                )
+
+        seed_prompt_templates(db)
+        curriculum = make_curriculum(db)
+        assessment, _ = make_assessment(db, curriculum, status=AssessmentStatus.active)
+
+        submission = Submission(
+            id="github-submission-id",
+            assessment_id=assessment.id,
+            submission_type=SubmissionType.github_url,
+            github_url="https://github.com/example/some-repo",
+            text_content="My retry logic is in src/components/CheckoutWizard.jsx.",
+        )
+        assessment.status = AssessmentStatus.submitted
+        db.add(submission)
+        db.commit()
+
+        llm = FakeLLMCapturing()
+        GradingService(db, llm).grade(submission.id)
+
+        assert llm.last_request is not None
+        assert "My retry logic is in src/components/CheckoutWizard.jsx." in llm.last_request.submission_content
+        assert "Fake fetched content for README.md" in llm.last_request.submission_content
+        assert llm.last_request.github_url == "https://github.com/example/some-repo"
+
+    def test_grade_text_submission_has_no_github_url_on_request(self, db):
+        """Regression: a plain text submission must NOT set github_url on
+        the GradingRequest — that field is what gates web_fetch tool
+        access in AnthropicLLMAdapter.grade_submission, and text answers
+        must never get tools attached."""
+        from app.interfaces.llm import GradingRequest, GradingResult
+
+        class FakeLLMCapturing(FakeLLM):
+            def __init__(self) -> None:
+                self.last_request: GradingRequest | None = None
+
+            def grade_submission(self, req: GradingRequest) -> GradingResult:
+                self.last_request = req
+                return GradingResult(
+                    mastery_score=90.0, weak_areas=[], overall_feedback="ok",
+                )
+
+        seed_prompt_templates(db)
+        curriculum = make_curriculum(db)
+        assessment, _ = make_assessment(db, curriculum, status=AssessmentStatus.active)
+        submission = make_submission(db, assessment)
+
+        llm = FakeLLMCapturing()
+        GradingService(db, llm).grade(submission.id)
+
+        assert llm.last_request is not None
+        assert llm.last_request.github_url is None
 
     def test_grade_uses_grading_prompt_template(self, db, fake_llm):
         """GradingService fetches the 'grading' PromptTemplate — missing it raises NotFoundError."""
