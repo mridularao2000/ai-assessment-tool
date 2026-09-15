@@ -462,6 +462,42 @@ class TestRetakeCap:
         assert [a.attempt_number for a in assessments] == [1, 2]
         assert len(fake_scheduler.schedule_assessment_jobs_calls) == 1
 
+    def test_retest_scheduled_from_today_not_stale_completion_date(self, db, monkeypatch):
+        """Regression test: create_retest() used to compute scheduled_at/
+        due_date from curriculum.target_completion_date — the ORIGINAL
+        completion date, unchanged since curriculum creation. By the time
+        a retest is actually created (first attempt sent, submitted,
+        graded, found failing), that date has almost always already
+        passed, so the retest came back with a due_date already in the
+        past — expired on arrival. Fixed to anchor scheduling to
+        date.today() instead. make_curriculum()'s default
+        target_completion_date (2026-08-01) is used here specifically
+        because it's far enough in the past to reproduce the bug.
+        """
+        from datetime import date
+
+        from app.jobs.grade_submission_job import grade_submission_job
+
+        seed_prompt_templates(db)
+        curriculum = make_curriculum(db)  # target_completion_date defaults to 2026-08-01, long past
+        assessment, _ = make_assessment(db, curriculum, status=AssessmentStatus.active)
+        submission = make_submission(db, assessment)
+        fake_scheduler = FakeScheduler()
+        self._patch_job(monkeypatch, FakeLLMBelowThreshold(), fake_scheduler)
+
+        grade_submission_job(submission.id)
+
+        db.expire_all()
+        retest = (
+            db.query(Assessment)
+            .filter_by(curriculum_id=curriculum.id, attempt_number=2)
+            .one()
+        )
+        today = date.today()
+        assert retest.scheduled_at.date() >= today
+        assert retest.due_date.date() >= today
+        assert retest.status == AssessmentStatus.scheduled
+
     def test_retest_generation_failure_does_not_block_results_email(self, db, monkeypatch):
         """Regression test: create_retest() raising (e.g. the model exhausting
         its token budget on tool calls, surfaced as LLMValidationError) must
@@ -606,6 +642,14 @@ class TestRetakeCap:
         assert retest.part2_text is not None
         assert retest.assessment_text is None
         assert len(fake_scheduler.schedule_assessment_jobs_calls) == 1
+        # Regression: _create_midterm_retest() used to schedule from the
+        # stale curriculum.target_completion_date (2026-08-01 here, long
+        # past) instead of today — see the identical standalone regression
+        # test above for the full explanation.
+        from datetime import date
+        today = date.today()
+        assert retest.scheduled_at.date() >= today
+        assert retest.due_date.date() >= today
 
     def test_passing_midterm_first_attempt_marks_mastery_no_retest(self, db, monkeypatch):
         from app.jobs.grade_submission_job import grade_submission_job

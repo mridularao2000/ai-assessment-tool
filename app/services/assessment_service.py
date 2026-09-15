@@ -169,10 +169,17 @@ class AssessmentService:
              previous_mastery_score, weak_areas, and attempt_number + 1 —
              plus resources (Assessment-type entries only, so web_search/
              web_fetch grounding still applies on retry, not just attempt 1).
-          5. Repeat scheduling + token generation logic from
-             create_for_curriculum (standalone) or the entry-specific date
-             math (curriculum.entry_type is not None — same reminder-
-             anchored-to-due_date rule as a first attempt, not standalone's).
+          5. Compute a fresh scheduling window anchored to date.today() —
+             deliberately NOT curriculum.target_completion_date, unlike
+             create_for_curriculum's first attempt. By the time a retest
+             is created (first attempt sent, submitted, graded, found
+             failing), that original date has almost always already
+             passed; reusing it would compute a scheduled_at/due_date
+             already in the past. Uses create_for_curriculum's date math
+             (standalone) or the entry-specific date math
+             (curriculum.entry_type is not None — same reminder-anchored-
+             to-due_date rule as a first attempt, not standalone's), just
+             with today() as the base date instead.
           6. Persist Assessment with attempt_number = previous_attempt + 1.
           7. Return the Assessment.
              Caller must pass it to SchedulerService.schedule_assessment_jobs().
@@ -220,7 +227,16 @@ class AssessmentService:
                     )
                 )
 
-            scheduled_at = self._calculate_scheduled_at(curriculum.target_completion_date)
+            # Anchored to today, not curriculum.target_completion_date: by
+            # the time a retest is created (first attempt sent, submitted,
+            # graded, found failing), that original date has almost always
+            # already passed — reusing it here would compute a scheduled_at
+            # (and therefore due_date) already in the past, generating a
+            # retest that's expired on arrival. Same fix as
+            # CurriculumUploadService._schedule_entry_assessment's
+            # effective_date param for a hold clearing late: reopen the
+            # window from whenever the retest is actually created.
+            scheduled_at = self._calculate_scheduled_at(date.today())
             if is_entry:
                 from app.services.curriculum_upload_service import _build_entry_dates
                 reminder_at, due_date = _build_entry_dates(scheduled_at)
@@ -284,7 +300,9 @@ class AssessmentService:
                 )
             )
 
-        scheduled_at = self._calculate_scheduled_at(curriculum.target_completion_date)
+        # See create_retest()'s identical comment above — anchored to today,
+        # not the stale curriculum.target_completion_date.
+        scheduled_at = self._calculate_scheduled_at(date.today())
         reminder_at, due_date = _build_entry_dates(scheduled_at)
 
         assessment_id = str(uuid.uuid4())
