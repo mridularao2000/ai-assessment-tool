@@ -3,11 +3,113 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AI Assessment — Control Panel</title>
+  <title>AI Assessment — Student Portal</title>
   <link rel="icon" type="image/svg+xml" href="/logo.svg">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
   <style>
-    body { background: #f1f3f5; }
+    :root { --sidebar-w: 250px; }
+    html, body { height: 100%; }
+    body { background: #f1f3f5; margin: 0; }
+
+    /* ── Portal shell: persistent sidebar + focused single-panel content ──
+       Replaces the old accordion-on-one-long-page layout — every step used
+       to live on the same scroll, so getting from "Create Curriculum" to
+       "Reschedule" meant expanding/collapsing your way down the page.
+       Here each step is its own panel; the sidebar switches between them
+       instantly, so no panel is ever longer than one focused screen. */
+    .portal-shell { display: flex; min-height: 100vh; }
+
+    .portal-sidebar {
+      width: var(--sidebar-w);
+      flex-shrink: 0;
+      background: #fff;
+      border-right: 1px solid #dee2e6;
+      padding: 20px 14px;
+      position: sticky;
+      top: 0;
+      align-self: flex-start;
+      height: 100vh;
+      overflow-y: auto;
+    }
+
+    .portal-brand {
+      display: flex; align-items: center; gap: 10px;
+      padding: 4px 8px 18px;
+      border-bottom: 1px solid #eee;
+      margin-bottom: 12px;
+    }
+    .portal-brand h1 { font-size: 1.05rem; font-weight: 700; margin: 0; line-height: 1.2; }
+    .portal-brand small { display: block; color: #6c757d; font-size: .72rem; }
+
+    .nav-section-label {
+      font-size: .68rem;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      font-weight: 700;
+      color: #8a94a6;
+      margin: 18px 10px 6px;
+    }
+    .nav-section-label:first-of-type { margin-top: 4px; }
+
+    .portal-nav-link {
+      display: flex; align-items: center; gap: 10px;
+      width: 100%;
+      text-align: left;
+      border: none;
+      background: transparent;
+      padding: 9px 12px;
+      border-radius: 8px;
+      font-size: .88rem;
+      font-weight: 500;
+      color: #495057;
+      cursor: pointer;
+      margin-bottom: 2px;
+    }
+    .portal-nav-link:hover { background: #f1f3f5; }
+    .portal-nav-link.active { background: #e7f1ff; color: #0d6efd; font-weight: 700; }
+    .portal-nav-link .nav-icon { width: 18px; text-align: center; flex-shrink: 0; }
+
+    .portal-main { flex: 1; min-width: 0; }
+
+    .portal-topbar {
+      background: #fff;
+      border-bottom: 1px solid #dee2e6;
+      padding: 18px 32px;
+    }
+    .portal-topbar h2 { font-size: 1.2rem; font-weight: 700; margin: 0; }
+    .portal-crumb { color: #6c757d; font-size: .8rem; }
+
+    .portal-content { padding: 26px 32px 60px; }
+    .portal-panel { display: none; max-width: 720px; }
+    .portal-panel.active { display: block; }
+    .portal-panel.panel-wide { max-width: none; }
+
+    /* Persistent "which curriculum am I working on" strip — shown only
+       while a Curriculum-group panel is active, since Upload/My Entries/
+       Add/Update/Close all key off the same upload ID. Same role the
+       shared field above the old curriculum accordion played, just
+       visible regardless of which curriculum panel you're actually on. */
+    .curriculum-idbar {
+      background: #fff;
+      border: 1px solid #dee2e6;
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin-bottom: 22px;
+      max-width: 720px;
+    }
+
+    @media (max-width: 900px) {
+      .portal-shell { flex-direction: column; }
+      .portal-sidebar {
+        width: 100%; height: auto; position: static;
+        display: flex; overflow-x: auto; white-space: nowrap;
+        padding: 10px 12px; gap: 4px; border-right: none;
+        border-bottom: 1px solid #dee2e6;
+      }
+      .portal-brand, .nav-section-label { display: none; }
+      .portal-nav-link { width: auto; }
+      .portal-topbar, .portal-content { padding-left: 16px; padding-right: 16px; }
+    }
 
     .section-badge {
       display: inline-flex; align-items: center; justify-content: center;
@@ -40,25 +142,22 @@
     .sub-section { transition: opacity 0.15s; }
     .sub-section.d-none { opacity: 0; }
 
-    /* Accordion: badge stays visible whether open or collapsed */
-    .accordion-button:not(.collapsed) { background: #e7f1ff; color: #084298; box-shadow: none; }
-    .accordion-button:focus { box-shadow: none; border-color: rgba(0,0,0,.125); }
-    .accordion-item { border-color: rgba(0,0,0,.08); }
-    .accordion-body { padding: 1.25rem 1.5rem 1.5rem; }
-
-    .nav-pills .nav-link { font-weight: 600; }
-    .nav-pills .nav-link.active { background-color: #0d6efd; }
-
-    /* View Entries: one card per entry, stacked vertically — replaced a
-       wide horizontally-scrolling table (see git history). With enough
-       rows, that table's own horizontal scrollbar sat below the fold,
-       forcing scroll-down-then-scroll-right just to reach the one action
-       (Send late exam / Submit project) usually squeezed into its last,
-       often off-screen, column. Every field here wraps instead of
-       scrolling, so nothing is ever off to the side. */
-    .entries-list { display: flex; flex-direction: column; gap: 10px; }
+    /* My Entries: a responsive card grid, like a portal's course/assignment
+       tile board — replaced a wide horizontally-scrolling table (see git
+       history) and, before this refactor, a single stacked column. Every
+       field wraps instead of scrolling, and the grid uses the extra width
+       a portal layout has (vs. the old 760px-capped page) to show several
+       entries at a glance instead of one long column. */
+    .entries-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 14px;
+    }
 
     .entry-card {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
       border: 1px solid #dee2e6;
       border-radius: 8px;
       padding: 14px 16px;
@@ -111,558 +210,522 @@
       flex-wrap: wrap;
       gap: 8px;
       margin-top: 10px;
+      padding-top: 10px;
+    }
+
+    /* Pushes actions (+ the project-submit panel, when present) to the
+       bottom of the tile so cards of differing content length still line
+       up along the same baseline within a grid row. */
+    .entry-card-actions { margin-top: auto; }
+
+    .project-submit-panel {
+      margin-top: 10px;
+      padding: 14px;
+      border: 1px solid #ffe69c;
+      border-radius: 8px;
+      background: rgba(255, 243, 205, 0.35);
     }
   </style>
 </head>
 <body>
-<div class="container py-4 py-md-5" style="max-width: 760px">
+<div class="portal-shell">
 
-  <!-- Header -->
-  <div class="mb-4">
-    <div class="d-flex align-items-center gap-2 mb-1">
-      <img src="/logo.svg" alt="Logo" width="36" height="36">
-      <h3 class="fw-bold mb-0">AI Assessment System</h3>
+  <!-- ══════════════════════ SIDEBAR ══════════════════════ -->
+  <aside class="portal-sidebar">
+    <div class="portal-brand">
+      <img src="/logo.svg" alt="Logo" width="30" height="30">
+      <div>
+        <h1>AI Assessment</h1>
+        <small>Student Portal</small>
+      </div>
     </div>
-    <p class="text-muted mb-0">Developer control panel</p>
-  </div>
 
-  <!-- Tabs -->
-  <ul class="nav nav-pills mb-3 gap-2" id="mainTabs" role="tablist">
-    <li class="nav-item" role="presentation">
-      <button class="nav-link active" id="tab-standalone-btn" data-bs-toggle="pill"
-              data-bs-target="#pane-standalone" type="button" role="tab"
-              aria-controls="pane-standalone" aria-selected="true">
-        Standalone Assessment
+    <nav>
+      <div class="nav-section-label">Standalone Assessment</div>
+      <button class="portal-nav-link active" data-panel="panel-create" onclick="showPanel('panel-create')">
+        <span class="nav-icon">📘</span>Create Curriculum
       </button>
-    </li>
-    <li class="nav-item" role="presentation">
-      <button class="nav-link" id="tab-curriculum-btn" data-bs-toggle="pill"
-              data-bs-target="#pane-curriculum" type="button" role="tab"
-              aria-controls="pane-curriculum" aria-selected="false">
-        Explore Curriculum
+      <button class="portal-nav-link" data-panel="panel-submit" onclick="showPanel('panel-submit')">
+        <span class="nav-icon">✍️</span>Submit Answer
       </button>
-    </li>
-  </ul>
+      <button class="portal-nav-link" data-panel="panel-results" onclick="showPanel('panel-results')">
+        <span class="nav-icon">📊</span>Get Results
+      </button>
+      <button class="portal-nav-link" data-panel="panel-reschedule" onclick="showPanel('panel-reschedule')">
+        <span class="nav-icon">🗓️</span>Reschedule
+      </button>
 
-  <div class="tab-content">
+      <div class="nav-section-label">Curriculum</div>
+      <button class="portal-nav-link" data-panel="panel-upload" onclick="showPanel('panel-upload')">
+        <span class="nav-icon">⬆️</span>Upload File
+      </button>
+      <button class="portal-nav-link" data-panel="panel-entries" onclick="showPanel('panel-entries')">
+        <span class="nav-icon">🎓</span>My Entries
+      </button>
+      <button class="portal-nav-link" data-panel="panel-add" onclick="showPanel('panel-add')">
+        <span class="nav-icon">➕</span>Add Entry
+      </button>
+      <button class="portal-nav-link" data-panel="panel-update" onclick="showPanel('panel-update')">
+        <span class="nav-icon">✏️</span>Update Entry
+      </button>
+      <button class="portal-nav-link" data-panel="panel-close" onclick="showPanel('panel-close')">
+        <span class="nav-icon">🗄️</span>Close / Archive
+      </button>
+    </nav>
+  </aside>
 
-    <!-- ══════════════════════ STANDALONE ASSESSMENT ══════════════════════ -->
-    <div class="tab-pane fade show active" id="pane-standalone" role="tabpanel">
+  <!-- ══════════════════════ MAIN ══════════════════════ -->
+  <main class="portal-main">
+    <div class="portal-topbar">
+      <h2 id="panelTitle">Create Curriculum</h2>
+      <div class="portal-crumb" id="panelCrumb">Standalone Assessment</div>
+    </div>
 
-      <div class="alert alert-info alert-sm py-2 small mb-3">
-        <strong>Workflow:</strong>
-        Create Curriculum → assessment is auto-generated &amp; emailed on the scheduled date →
-        open the email link to pre-fill your ID &amp; token → Submit Answer → Get Results.
-        Use Reschedule if you need to delay the assessment date.
-      </div>
+    <div class="portal-content">
 
-      <div class="accordion" id="accordionStandalone">
-
-        <!-- ── 1. Create Curriculum ─────────────────────────────────────── -->
-        <div class="accordion-item">
-          <h2 class="accordion-header">
-            <button class="accordion-button" type="button" data-bs-toggle="collapse"
-                    data-bs-target="#collapseCreate" aria-expanded="true" aria-controls="collapseCreate">
-              <span class="section-badge">1</span>Create Curriculum
-            </button>
-          </h2>
-          <div id="collapseCreate" class="accordion-collapse collapse show" data-bs-parent="#accordionStandalone">
-            <div class="accordion-body">
-              <form id="curriculumForm" novalidate>
-
-                <div class="mb-3">
-                  <label class="form-label" for="c_topic">Topic <span class="text-danger">*</span></label>
-                  <input type="text" class="form-control" id="c_topic"
-                         placeholder="e.g. Python async programming" required>
-                </div>
-
-                <div class="mb-3">
-                  <label class="form-label" for="c_date">Target Completion Date <span class="text-danger">*</span></label>
-                  <input type="date" class="form-control" id="c_date" required>
-                </div>
-
-                <div class="mb-3">
-                  <label class="form-label" for="c_notes">Notes
-                    <span class="text-muted fw-normal">(optional)</span>
-                  </label>
-                  <textarea class="form-control" id="c_notes" rows="3"
-                            placeholder="Free-form study notes, key concepts, anything relevant…"></textarea>
-                </div>
-
-                <div class="mb-3">
-                  <label class="form-label" for="c_links">Links
-                    <span class="text-muted fw-normal">(one URL per line, optional)</span>
-                  </label>
-                  <textarea class="form-control font-monospace" id="c_links" rows="2"
-                            placeholder="https://docs.python.org/3/library/asyncio.html&#10;https://realpython.com/async-io-python/"></textarea>
-                </div>
-
-                <div class="mb-3">
-                  <label class="form-label" for="c_repos">GitHub Repos
-                    <span class="text-muted fw-normal">(one URL per line, optional)</span>
-                  </label>
-                  <textarea class="form-control font-monospace" id="c_repos" rows="2"
-                            placeholder="https://github.com/user/repo"></textarea>
-                </div>
-
-                <div class="mb-3">
-                  <label class="form-label" for="c_files">Upload Files
-                    <span class="text-muted fw-normal">(optional, multiple allowed)</span>
-                  </label>
-                  <input type="file" class="form-control" id="c_files" multiple>
-                </div>
-
-                <p class="text-muted small mb-3">
-                  At least one of notes, links, GitHub repos, or a file is required.
-                </p>
-
-                <button type="submit" class="btn btn-primary"
-                        id="curriculumBtn" data-label="Create Curriculum">
-                  Create Curriculum
-                </button>
-              </form>
-              <div id="curriculumResult" class="response-box"></div>
-            </div>
-          </div>
-        </div>
-
-        <!-- ── 2. Submit Answer ─────────────────────────────────────────── -->
-        <div class="accordion-item">
-          <h2 class="accordion-header">
-            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
-                    data-bs-target="#collapseSubmit" aria-expanded="false" aria-controls="collapseSubmit">
-              <span class="section-badge">2</span>Submit Answer
-            </button>
-          </h2>
-          <div id="collapseSubmit" class="accordion-collapse collapse" data-bs-parent="#accordionStandalone">
-            <div class="accordion-body">
-              <p class="text-muted small mb-2">
-                On assessment day you'll receive an email with your questions and a link.
-                Opening that link pre-fills the Assessment ID and Token below automatically.
-              </p>
-              <p class="text-muted small mb-3">
-                Late submissions remaining this month: <span id="lateTokenCount" class="fw-semibold">—</span>
-              </p>
-
-              <form id="submissionForm" novalidate>
-
-                <div class="row g-3 mb-3">
-                  <div class="col-sm-7">
-                    <label class="form-label" for="s_id">Assessment ID</label>
-                    <input type="text" class="form-control font-monospace" id="s_id" placeholder="UUID — pre-filled from email link">
-                  </div>
-                  <div class="col-sm-5">
-                    <label class="form-label" for="s_token">Token</label>
-                    <input type="text" class="form-control font-monospace" id="s_token" placeholder="Pre-filled from email link">
-                  </div>
-                </div>
-
-                <div id="s_part1_section" class="sub-section mb-3 d-none">
-                  <label class="form-label" for="s_part1_text">
-                    Part 1 — Assignment Answer
-                    <span class="text-muted fw-normal">(cumulative questions from the exam email)</span>
-                  </label>
-                  <textarea class="form-control" id="s_part1_text" rows="5"
-                            placeholder="Answer Part 1's assignment questions here…"></textarea>
-                </div>
-
-                <div class="text-muted small mb-2">
-                  <div><strong>Coding questions:</strong> use GitHub repo URL + paste your explanation and specific file paths in the text field (both can be submitted together).</div>
-                  <div><strong>Written questions:</strong> use Text.</div>
-                  <div><strong>Single file:</strong> use File Upload.</div>
-                </div>
-
-                <div class="mb-3">
-                  <label class="form-label" for="s_type" id="s_type_label">Submission Type</label>
-                  <select class="form-select" id="s_type" onchange="toggleSubmissionType()">
-                    <option value="text">Text answer</option>
-                    <option value="github_url">GitHub URL</option>
-                    <option value="file">File upload</option>
-                  </select>
-                </div>
-
-                <div id="s_text_section" class="sub-section mb-3">
-                  <label class="form-label" for="s_text" id="s_text_label">Your Answer</label>
-                  <textarea class="form-control" id="s_text" rows="7"
-                            placeholder="Write your answer here…"></textarea>
-                </div>
-
-                <div id="s_github_section" class="sub-section mb-3 d-none">
-                  <label class="form-label" for="s_github">GitHub Repository URL</label>
-                  <input type="url" class="form-control" id="s_github"
-                         placeholder="https://github.com/user/repo">
-                </div>
-
-                <div id="s_file_section" class="sub-section mb-3 d-none">
-                  <label class="form-label" for="s_file">File</label>
-                  <input type="file" class="form-control" id="s_file">
-                </div>
-
-                <button type="submit" class="btn btn-primary"
-                        id="submissionBtn" data-label="Submit Answer">
-                  Submit Answer
-                </button>
-              </form>
-              <div id="submissionResult" class="response-box"></div>
-            </div>
-          </div>
-        </div>
-
-        <!-- ── 3. Get Results ───────────────────────────────────────────── -->
-        <div class="accordion-item">
-          <h2 class="accordion-header">
-            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
-                    data-bs-target="#collapseResults" aria-expanded="false" aria-controls="collapseResults">
-              <span class="section-badge">3</span>Get Results
-            </button>
-          </h2>
-          <div id="collapseResults" class="accordion-collapse collapse" data-bs-parent="#accordionStandalone">
-            <div class="accordion-body">
-              <p class="text-muted small mb-3">
-                Grading runs in the background after submission — you'll also receive a results email.
-                The Submission ID is auto-filled after a successful submission above.
-              </p>
-
-              <div class="mb-3">
-                <label class="form-label" for="r_id">Submission ID</label>
-                <input type="text" class="form-control font-monospace" id="r_id"
-                       placeholder="UUID — auto-filled after submission">
-              </div>
-
-              <button class="btn btn-primary"
-                      id="resultsBtn" data-label="Get Results"
-                      onclick="getResults()">
-                Get Results
-              </button>
-              <div id="resultsResult" class="response-box"></div>
-            </div>
-          </div>
-        </div>
-
-        <!-- ── 4. Reschedule ────────────────────────────────────────────── -->
-        <div class="accordion-item">
-          <h2 class="accordion-header">
-            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
-                    data-bs-target="#collapseReschedule" aria-expanded="false" aria-controls="collapseReschedule">
-              <span class="section-badge">4</span>Reschedule Assessment
-            </button>
-          </h2>
-          <div id="collapseReschedule" class="accordion-collapse collapse" data-bs-parent="#accordionStandalone">
-            <div class="accordion-body">
-              <p class="text-muted small mb-3">
-                Only scheduled or active assessments can be rescheduled.
-                The reason is classified by AI — medical, interview, and emergency requests
-                are approved; procrastination and lack-of-preparation are denied.
-                Assessment ID and Token are pre-filled from the email link.
-              </p>
-
-              <div class="row g-3 mb-3">
-                <div class="col-sm-7">
-                  <label class="form-label" for="re_id">Assessment ID</label>
-                  <input type="text" class="form-control font-monospace" id="re_id" placeholder="UUID — pre-filled from email link">
-                </div>
-                <div class="col-sm-5">
-                  <label class="form-label" for="re_token">Token</label>
-                  <input type="text" class="form-control font-monospace" id="re_token" placeholder="Pre-filled from email link">
-                </div>
-              </div>
-
-              <form id="rescheduleForm" novalidate>
-                <div class="mb-3">
-                  <label class="form-label" for="re_reason">
-                    Reason
-                    <span class="text-muted fw-normal">(minimum 20 characters)</span>
-                  </label>
-                  <textarea class="form-control" id="re_reason" rows="3"
-                            placeholder="e.g. I have a confirmed medical appointment on the assessment date and cannot attend."
-                            oninput="updateCharCount()"></textarea>
-                  <div class="form-text" id="reCharCount">0 / 20 minimum</div>
-                </div>
-                <button type="submit" class="btn btn-primary"
-                        id="rescheduleBtn" data-label="Request Reschedule">
-                  Request Reschedule
-                </button>
-              </form>
-              <div id="rescheduleResult" class="response-box"></div>
-            </div>
-          </div>
-        </div>
-
-      </div><!-- /accordionStandalone -->
-    </div><!-- /pane-standalone -->
-
-    <!-- ══════════════════════ CURRICULUM UPLOAD ══════════════════════════ -->
-    <div class="tab-pane fade" id="pane-curriculum" role="tabpanel">
-
-      <div class="alert alert-info alert-sm py-2 small mb-3">
-        <strong>Workflow:</strong>
-        Upload a curriculum JSON file (a <code>topics</code> list of assessment/midterm entries) →
-        View Entries to see IDs → Add or Update entries as the syllabus changes →
-        Close/Archive when the curriculum is finished. Everything here hits the API directly —
-        no AI agent needed.
-      </div>
-
-      <div class="mb-4">
-        <label class="form-label" for="cu_upload_id">Curriculum Upload ID</label>
+      <div class="curriculum-idbar d-none" id="curriculumIdBar">
+        <label class="form-label mb-1" for="cu_upload_id">Curriculum Upload ID</label>
         <input type="text" class="form-control font-monospace" id="cu_upload_id"
                placeholder="Auto-filled after upload, or paste an existing one">
-        <div class="form-text">Used by View Entries, Add Entry, and Close/Archive below.</div>
+        <div class="form-text mb-0">Used by Upload, My Entries, Add Entry, and Close/Archive.</div>
       </div>
 
-      <div class="accordion" id="accordionCurriculum">
+      <!-- ── panel-create ─────────────────────────────────────────────── -->
+      <section id="panel-create" class="portal-panel active">
+        <div class="alert alert-info alert-sm py-2 small mb-3">
+          <strong>Workflow:</strong>
+          Create Curriculum → assessment is auto-generated &amp; emailed on the scheduled date →
+          open the email link to pre-fill your ID &amp; token → Submit Answer → Get Results.
+          Use Reschedule if you need to delay the assessment date.
+        </div>
 
-        <!-- ── 1. Upload Curriculum File ────────────────────────────────── -->
-        <div class="accordion-item">
-          <h2 class="accordion-header">
-            <button class="accordion-button" type="button" data-bs-toggle="collapse"
-                    data-bs-target="#collapseUpload" aria-expanded="true" aria-controls="collapseUpload">
-              <span class="section-badge">1</span>Upload Curriculum File
-            </button>
-          </h2>
-          <div id="collapseUpload" class="accordion-collapse collapse show" data-bs-parent="#accordionCurriculum">
-            <div class="accordion-body">
-              <p class="text-muted small mb-3">
-                Uploads a new curriculum: parses every entry, schedules assessments/midterms that
-                are ready, holds any midterm still waiting on resources, and emails the syllabus.
-              </p>
-              <form id="uploadCurriculumForm" novalidate>
-                <div class="mb-3">
-                  <label class="form-label" for="cu_file">Curriculum JSON File <span class="text-danger">*</span></label>
-                  <input type="file" class="form-control" id="cu_file" accept="application/json,.json" required>
-                </div>
-                <button type="submit" class="btn btn-primary"
-                        id="uploadCurriculumBtn" data-label="Upload Curriculum">
-                  Upload Curriculum
-                </button>
-              </form>
-              <div id="uploadCurriculumResult" class="response-box"></div>
+        <form id="curriculumForm" novalidate>
+
+          <div class="mb-3">
+            <label class="form-label" for="c_topic">Topic <span class="text-danger">*</span></label>
+            <input type="text" class="form-control" id="c_topic"
+                   placeholder="e.g. Python async programming" required>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label" for="c_date">Target Completion Date <span class="text-danger">*</span></label>
+            <input type="date" class="form-control" id="c_date" required>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label" for="c_notes">Notes
+              <span class="text-muted fw-normal">(optional)</span>
+            </label>
+            <textarea class="form-control" id="c_notes" rows="3"
+                      placeholder="Free-form study notes, key concepts, anything relevant…"></textarea>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label" for="c_links">Links
+              <span class="text-muted fw-normal">(one URL per line, optional)</span>
+            </label>
+            <textarea class="form-control font-monospace" id="c_links" rows="2"
+                      placeholder="https://docs.python.org/3/library/asyncio.html&#10;https://realpython.com/async-io-python/"></textarea>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label" for="c_repos">GitHub Repos
+              <span class="text-muted fw-normal">(one URL per line, optional)</span>
+            </label>
+            <textarea class="form-control font-monospace" id="c_repos" rows="2"
+                      placeholder="https://github.com/user/repo"></textarea>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label" for="c_files">Upload Files
+              <span class="text-muted fw-normal">(optional, multiple allowed)</span>
+            </label>
+            <input type="file" class="form-control" id="c_files" multiple>
+          </div>
+
+          <p class="text-muted small mb-3">
+            At least one of notes, links, GitHub repos, or a file is required.
+          </p>
+
+          <button type="submit" class="btn btn-primary"
+                  id="curriculumBtn" data-label="Create Curriculum">
+            Create Curriculum
+          </button>
+        </form>
+        <div id="curriculumResult" class="response-box"></div>
+      </section>
+
+      <!-- ── panel-submit ─────────────────────────────────────────────── -->
+      <section id="panel-submit" class="portal-panel">
+        <p class="text-muted small mb-2">
+          On assessment day you'll receive an email with your questions and a link.
+          Opening that link pre-fills the Assessment ID and Token below automatically.
+        </p>
+        <p class="text-muted small mb-3">
+          Late submissions remaining this month: <span id="lateTokenCount" class="fw-semibold">—</span>
+        </p>
+
+        <form id="submissionForm" novalidate>
+
+          <div class="row g-3 mb-3">
+            <div class="col-sm-7">
+              <label class="form-label" for="s_id">Assessment ID</label>
+              <input type="text" class="form-control font-monospace" id="s_id" placeholder="UUID — pre-filled from email link">
             </div>
+            <div class="col-sm-5">
+              <label class="form-label" for="s_token">Token</label>
+              <input type="text" class="form-control font-monospace" id="s_token" placeholder="Pre-filled from email link">
+            </div>
+          </div>
+
+          <div id="s_part1_section" class="sub-section mb-3 d-none">
+            <label class="form-label" for="s_part1_text">
+              Part 1 — Assignment Answer
+              <span class="text-muted fw-normal">(cumulative questions from the exam email)</span>
+            </label>
+            <textarea class="form-control" id="s_part1_text" rows="5"
+                      placeholder="Answer Part 1's assignment questions here…"></textarea>
+          </div>
+
+          <div class="text-muted small mb-2">
+            <div><strong>Coding questions:</strong> use GitHub repo URL + paste your explanation and specific file paths in the text field (both can be submitted together).</div>
+            <div><strong>Written questions:</strong> use Text.</div>
+            <div><strong>Single file:</strong> use File Upload.</div>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label" for="s_type" id="s_type_label">Submission Type</label>
+            <select class="form-select" id="s_type" onchange="toggleSubmissionType()">
+              <option value="text">Text answer</option>
+              <option value="github_url">GitHub URL</option>
+              <option value="file">File upload</option>
+            </select>
+          </div>
+
+          <div id="s_text_section" class="sub-section mb-3">
+            <label class="form-label" for="s_text" id="s_text_label">Your Answer</label>
+            <textarea class="form-control" id="s_text" rows="7"
+                      placeholder="Write your answer here…"></textarea>
+          </div>
+
+          <div id="s_github_section" class="sub-section mb-3 d-none">
+            <label class="form-label" for="s_github">GitHub Repository URL</label>
+            <input type="url" class="form-control" id="s_github"
+                   placeholder="https://github.com/user/repo">
+          </div>
+
+          <div id="s_file_section" class="sub-section mb-3 d-none">
+            <label class="form-label" for="s_file">File</label>
+            <input type="file" class="form-control" id="s_file">
+          </div>
+
+          <button type="submit" class="btn btn-primary"
+                  id="submissionBtn" data-label="Submit Answer">
+            Submit Answer
+          </button>
+        </form>
+        <div id="submissionResult" class="response-box"></div>
+      </section>
+
+      <!-- ── panel-results ────────────────────────────────────────────── -->
+      <section id="panel-results" class="portal-panel">
+        <p class="text-muted small mb-3">
+          Grading runs in the background after submission — you'll also receive a results email.
+          The Submission ID is auto-filled after a successful submission.
+        </p>
+
+        <div class="mb-3">
+          <label class="form-label" for="r_id">Submission ID</label>
+          <input type="text" class="form-control font-monospace" id="r_id"
+                 placeholder="UUID — auto-filled after submission">
+        </div>
+
+        <button class="btn btn-primary"
+                id="resultsBtn" data-label="Get Results"
+                onclick="getResults()">
+          Get Results
+        </button>
+        <div id="resultsResult" class="response-box"></div>
+      </section>
+
+      <!-- ── panel-reschedule ─────────────────────────────────────────── -->
+      <section id="panel-reschedule" class="portal-panel">
+        <p class="text-muted small mb-3">
+          Only scheduled or active assessments can be rescheduled.
+          The reason is classified by AI — medical, interview, and emergency requests
+          are approved; procrastination and lack-of-preparation are denied.
+          Assessment ID and Token are pre-filled from the email link.
+        </p>
+
+        <div class="row g-3 mb-3">
+          <div class="col-sm-7">
+            <label class="form-label" for="re_id">Assessment ID</label>
+            <input type="text" class="form-control font-monospace" id="re_id" placeholder="UUID — pre-filled from email link">
+          </div>
+          <div class="col-sm-5">
+            <label class="form-label" for="re_token">Token</label>
+            <input type="text" class="form-control font-monospace" id="re_token" placeholder="Pre-filled from email link">
           </div>
         </div>
 
-        <!-- ── 2. View Entries ───────────────────────────────────────────── -->
-        <div class="accordion-item">
-          <h2 class="accordion-header">
-            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
-                    data-bs-target="#collapseView" aria-expanded="false" aria-controls="collapseView">
-              <span class="section-badge">2</span>View Entries
-            </button>
-          </h2>
-          <div id="collapseView" class="accordion-collapse collapse" data-bs-parent="#accordionCurriculum">
-            <div class="accordion-body">
-              <p class="text-muted small mb-3">
-                Lists every entry in the Curriculum Upload above, with the IDs needed for Update.
-              </p>
-              <button class="btn btn-primary mb-3"
-                      id="viewEntriesBtn" data-label="View Entries" onclick="viewEntries()">
-                View Entries
-              </button>
-              <div id="viewEntriesResult"></div>
+        <form id="rescheduleForm" novalidate>
+          <div class="mb-3">
+            <label class="form-label" for="re_reason">
+              Reason
+              <span class="text-muted fw-normal">(minimum 20 characters)</span>
+            </label>
+            <textarea class="form-control" id="re_reason" rows="3"
+                      placeholder="e.g. I have a confirmed medical appointment on the assessment date and cannot attend."
+                      oninput="updateCharCount()"></textarea>
+            <div class="form-text" id="reCharCount">0 / 20 minimum</div>
+          </div>
+          <button type="submit" class="btn btn-primary"
+                  id="rescheduleBtn" data-label="Request Reschedule">
+            Request Reschedule
+          </button>
+        </form>
+        <div id="rescheduleResult" class="response-box"></div>
+      </section>
+
+      <!-- ── panel-upload ─────────────────────────────────────────────── -->
+      <section id="panel-upload" class="portal-panel">
+        <div class="alert alert-info alert-sm py-2 small mb-3">
+          <strong>Workflow:</strong>
+          Upload a curriculum JSON file (a <code>topics</code> list of assessment/midterm entries) →
+          My Entries to see IDs → Add or Update entries as the syllabus changes →
+          Close/Archive when the curriculum is finished.
+        </div>
+        <p class="text-muted small mb-3">
+          Uploads a new curriculum: parses every entry, schedules assessments/midterms that
+          are ready, holds any midterm still waiting on resources, and emails the syllabus.
+        </p>
+        <form id="uploadCurriculumForm" novalidate>
+          <div class="mb-3">
+            <label class="form-label" for="cu_file">Curriculum JSON File <span class="text-danger">*</span></label>
+            <input type="file" class="form-control" id="cu_file" accept="application/json,.json" required>
+          </div>
+          <button type="submit" class="btn btn-primary"
+                  id="uploadCurriculumBtn" data-label="Upload Curriculum">
+            Upload Curriculum
+          </button>
+        </form>
+        <div id="uploadCurriculumResult" class="response-box"></div>
+      </section>
+
+      <!-- ── panel-entries (wide: card grid) ──────────────────────────── -->
+      <section id="panel-entries" class="portal-panel panel-wide">
+        <p class="text-muted small mb-3">
+          Every entry in the curriculum selected above, with the IDs needed for Update.
+        </p>
+        <button class="btn btn-primary mb-3"
+                id="viewEntriesBtn" data-label="View Entries" onclick="viewEntries()">
+          View Entries
+        </button>
+        <div id="viewEntriesResult"></div>
+      </section>
+
+      <!-- ── panel-add ─────────────────────────────────────────────────── -->
+      <section id="panel-add" class="portal-panel">
+        <p class="text-muted small mb-3">
+          Adds a new entry to the curriculum selected above.
+        </p>
+        <form id="addEntryForm" novalidate>
+
+          <div class="mb-3">
+            <label class="form-label" for="ae_topic">Topic <span class="text-danger">*</span></label>
+            <input type="text" class="form-control" id="ae_topic" required>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label" for="ae_type">Entry Type <span class="text-danger">*</span></label>
+            <select class="form-select" id="ae_type" onchange="toggleAddEntryType()">
+              <option value="assessment">Assessment</option>
+              <option value="midterm">Midterm</option>
+            </select>
+          </div>
+
+          <div class="row g-3 mb-3">
+            <div class="col-sm-6">
+              <label class="form-label" for="ae_chapter">Chapter <span class="text-danger">*</span></label>
+              <input type="text" class="form-control" id="ae_chapter" required>
+            </div>
+            <div class="col-sm-6">
+              <label class="form-label" for="ae_date">Completion Date <span class="text-danger">*</span></label>
+              <input type="date" class="form-control" id="ae_date" required>
             </div>
           </div>
-        </div>
 
-        <!-- ── 3. Add Entry ─────────────────────────────────────────────── -->
-        <div class="accordion-item">
-          <h2 class="accordion-header">
-            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
-                    data-bs-target="#collapseAdd" aria-expanded="false" aria-controls="collapseAdd">
-              <span class="section-badge">3</span>Add Entry
-            </button>
-          </h2>
-          <div id="collapseAdd" class="accordion-collapse collapse" data-bs-parent="#accordionCurriculum">
-            <div class="accordion-body">
-              <form id="addEntryForm" novalidate>
+          <div class="mb-3">
+            <label class="form-label" for="ae_marks">Max Marks <span class="text-danger">*</span></label>
+            <input type="number" class="form-control" id="ae_marks" min="1" step="1" required>
+          </div>
 
-                <div class="mb-3">
-                  <label class="form-label" for="ae_topic">Topic <span class="text-danger">*</span></label>
-                  <input type="text" class="form-control" id="ae_topic" required>
-                </div>
-
-                <div class="mb-3">
-                  <label class="form-label" for="ae_type">Entry Type <span class="text-danger">*</span></label>
-                  <select class="form-select" id="ae_type" onchange="toggleAddEntryType()">
-                    <option value="assessment">Assessment</option>
-                    <option value="midterm">Midterm</option>
-                  </select>
-                </div>
-
-                <div class="row g-3 mb-3">
-                  <div class="col-sm-6">
-                    <label class="form-label" for="ae_chapter">Chapter <span class="text-danger">*</span></label>
-                    <input type="text" class="form-control" id="ae_chapter" required>
-                  </div>
-                  <div class="col-sm-6">
-                    <label class="form-label" for="ae_date">Completion Date <span class="text-danger">*</span></label>
-                    <input type="date" class="form-control" id="ae_date" required>
-                  </div>
-                </div>
-
-                <div class="mb-3">
-                  <label class="form-label" for="ae_marks">Max Marks <span class="text-danger">*</span></label>
-                  <input type="number" class="form-control" id="ae_marks" min="1" step="1" required>
-                </div>
-
-                <div id="ae_assessment_fields">
-                  <div class="mb-3">
-                    <label class="form-label" for="ae_resources">Resources
-                      <span class="text-muted fw-normal">(one per line)</span>
-                    </label>
-                    <textarea class="form-control font-monospace" id="ae_resources" rows="3"
-                              placeholder="https://docs.python.org/3/library/asyncio.html"></textarea>
-                  </div>
-                </div>
-
-                <div id="ae_midterm_fields" class="sub-section d-none">
-                  <div class="mb-3">
-                    <label class="form-label" for="ae_known_now">Known-Now Resources
-                      <span class="text-muted fw-normal">(one per line)</span>
-                    </label>
-                    <textarea class="form-control font-monospace" id="ae_known_now" rows="2"></textarea>
-                  </div>
-                  <div class="mb-3">
-                    <label class="form-label" for="ae_pending">Pending Resources
-                      <span class="text-muted fw-normal">(one label per line — filled in later)</span>
-                    </label>
-                    <textarea class="form-control font-monospace" id="ae_pending" rows="2"
-                              placeholder="repo URL — stub a throwaway public repo"></textarea>
-                  </div>
-                  <div class="mb-3">
-                    <label class="form-label" for="ae_probe">Probe Focus
-                      <span class="text-muted fw-normal">(optional)</span>
-                    </label>
-                    <textarea class="form-control" id="ae_probe" rows="2"></textarea>
-                  </div>
-                </div>
-
-                <button type="submit" class="btn btn-primary"
-                        id="addEntryBtn" data-label="Add Entry">
-                  Add Entry
-                </button>
-              </form>
-              <div id="addEntryResult" class="response-box"></div>
+          <div id="ae_assessment_fields">
+            <div class="mb-3">
+              <label class="form-label" for="ae_resources">Resources
+                <span class="text-muted fw-normal">(one per line)</span>
+              </label>
+              <textarea class="form-control font-monospace" id="ae_resources" rows="3"
+                        placeholder="https://docs.python.org/3/library/asyncio.html"></textarea>
             </div>
           </div>
-        </div>
 
-        <!-- ── 4. Update Entry ──────────────────────────────────────────── -->
-        <div class="accordion-item">
-          <h2 class="accordion-header">
-            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
-                    data-bs-target="#collapseUpdate" aria-expanded="false" aria-controls="collapseUpdate">
-              <span class="section-badge">4</span>Update Entry
-            </button>
-          </h2>
-          <div id="collapseUpdate" class="accordion-collapse collapse" data-bs-parent="#accordionCurriculum">
-            <div class="accordion-body">
-              <p class="text-muted small mb-3">
-                Only entries with no attempt or grade on record yet can be edited — changing
-                resources or dates after an exam was already generated would corrupt what's on
-                record. Leave a field blank to leave it unchanged.
-              </p>
-
-              <div class="mb-3">
-                <label class="form-label" for="ue_id">Entry ID <span class="text-danger">*</span></label>
-                <input type="text" class="form-control font-monospace" id="ue_id"
-                       placeholder="From View Entries above" required>
-              </div>
-
-              <form id="updateEntryForm" novalidate>
-                <div class="row g-3 mb-3">
-                  <div class="col-sm-6">
-                    <label class="form-label" for="ue_topic">Topic</label>
-                    <input type="text" class="form-control" id="ue_topic" placeholder="Leave blank to keep unchanged">
-                  </div>
-                  <div class="col-sm-6">
-                    <label class="form-label" for="ue_chapter">Chapter</label>
-                    <input type="text" class="form-control" id="ue_chapter" placeholder="Leave blank to keep unchanged">
-                  </div>
-                </div>
-                <div class="row g-3 mb-3">
-                  <div class="col-sm-6">
-                    <label class="form-label" for="ue_date">Completion Date</label>
-                    <input type="date" class="form-control" id="ue_date">
-                  </div>
-                  <div class="col-sm-6">
-                    <label class="form-label" for="ue_marks">Max Marks</label>
-                    <input type="number" class="form-control" id="ue_marks" min="1" step="1"
-                           placeholder="Leave blank to keep unchanged">
-                  </div>
-                </div>
-                <div class="mb-3">
-                  <label class="form-label" for="ue_resources">Resources
-                    <span class="text-muted fw-normal">(assessment-type only — one per line, full replace)</span>
-                  </label>
-                  <textarea class="form-control font-monospace" id="ue_resources" rows="2"
-                            placeholder="Leave blank to keep unchanged"></textarea>
-                </div>
-                <div class="mb-3">
-                  <label class="form-label" for="ue_known_now">Known-Now Resources
-                    <span class="text-muted fw-normal">(midterm-type only — one per line)</span>
-                  </label>
-                  <textarea class="form-control font-monospace" id="ue_known_now" rows="2"
-                            placeholder="Leave blank to keep unchanged"></textarea>
-                </div>
-                <div class="mb-3">
-                  <label class="form-label" for="ue_probe">Probe Focus
-                    <span class="text-muted fw-normal">(midterm-type only)</span>
-                  </label>
-                  <textarea class="form-control" id="ue_probe" rows="2"
-                            placeholder="Leave blank to keep unchanged"></textarea>
-                </div>
-                <button type="submit" class="btn btn-primary"
-                        id="updateEntryBtn" data-label="Update Entry">
-                  Update Entry
-                </button>
-              </form>
-              <div id="updateEntryResult" class="response-box"></div>
+          <div id="ae_midterm_fields" class="sub-section d-none">
+            <div class="mb-3">
+              <label class="form-label" for="ae_known_now">Known-Now Resources
+                <span class="text-muted fw-normal">(one per line)</span>
+              </label>
+              <textarea class="form-control font-monospace" id="ae_known_now" rows="2"></textarea>
+            </div>
+            <div class="mb-3">
+              <label class="form-label" for="ae_pending">Pending Resources
+                <span class="text-muted fw-normal">(one label per line — filled in later)</span>
+              </label>
+              <textarea class="form-control font-monospace" id="ae_pending" rows="2"
+                        placeholder="repo URL — stub a throwaway public repo"></textarea>
+            </div>
+            <div class="mb-3">
+              <label class="form-label" for="ae_probe">Probe Focus
+                <span class="text-muted fw-normal">(optional)</span>
+              </label>
+              <textarea class="form-control" id="ae_probe" rows="2"></textarea>
             </div>
           </div>
+
+          <button type="submit" class="btn btn-primary"
+                  id="addEntryBtn" data-label="Add Entry">
+            Add Entry
+          </button>
+        </form>
+        <div id="addEntryResult" class="response-box"></div>
+      </section>
+
+      <!-- ── panel-update ─────────────────────────────────────────────── -->
+      <section id="panel-update" class="portal-panel">
+        <p class="text-muted small mb-3">
+          Only entries with no attempt or grade on record yet can be edited — changing
+          resources or dates after an exam was already generated would corrupt what's on
+          record. Leave a field blank to leave it unchanged.
+        </p>
+
+        <div class="mb-3">
+          <label class="form-label" for="ue_id">Entry ID <span class="text-danger">*</span></label>
+          <input type="text" class="form-control font-monospace" id="ue_id"
+                 placeholder="From My Entries" required>
         </div>
 
-        <!-- ── 5. Close / Archive Curriculum ────────────────────────────── -->
-        <div class="accordion-item">
-          <h2 class="accordion-header">
-            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
-                    data-bs-target="#collapseClose" aria-expanded="false" aria-controls="collapseClose">
-              <span class="section-badge">5</span>Close / Archive Curriculum
-            </button>
-          </h2>
-          <div id="collapseClose" class="accordion-collapse collapse" data-bs-parent="#accordionCurriculum">
-            <div class="accordion-body">
-              <p class="text-muted small mb-3">
-                Archives the curriculum upload above: sends one final transcript snapshot to the
-                configured recipients, then permanently cancels every future reminder, exam
-                generation, and transcript send for its entries. This never deletes data —
-                it's a soft archive, not an erasure — but it cannot be undone once sent.
-              </p>
-              <button class="btn btn-danger"
-                      id="closeCurriculumBtn" data-label="Close / Archive Curriculum"
-                      onclick="closeCurriculum()">
-                Close / Archive Curriculum
-              </button>
-              <div id="closeCurriculumResult" class="response-box"></div>
+        <form id="updateEntryForm" novalidate>
+          <div class="row g-3 mb-3">
+            <div class="col-sm-6">
+              <label class="form-label" for="ue_topic">Topic</label>
+              <input type="text" class="form-control" id="ue_topic" placeholder="Leave blank to keep unchanged">
+            </div>
+            <div class="col-sm-6">
+              <label class="form-label" for="ue_chapter">Chapter</label>
+              <input type="text" class="form-control" id="ue_chapter" placeholder="Leave blank to keep unchanged">
             </div>
           </div>
-        </div>
+          <div class="row g-3 mb-3">
+            <div class="col-sm-6">
+              <label class="form-label" for="ue_date">Completion Date</label>
+              <input type="date" class="form-control" id="ue_date">
+            </div>
+            <div class="col-sm-6">
+              <label class="form-label" for="ue_marks">Max Marks</label>
+              <input type="number" class="form-control" id="ue_marks" min="1" step="1"
+                     placeholder="Leave blank to keep unchanged">
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label" for="ue_resources">Resources
+              <span class="text-muted fw-normal">(assessment-type only — one per line, full replace)</span>
+            </label>
+            <textarea class="form-control font-monospace" id="ue_resources" rows="2"
+                      placeholder="Leave blank to keep unchanged"></textarea>
+          </div>
+          <div class="mb-3">
+            <label class="form-label" for="ue_known_now">Known-Now Resources
+              <span class="text-muted fw-normal">(midterm-type only — one per line)</span>
+            </label>
+            <textarea class="form-control font-monospace" id="ue_known_now" rows="2"
+                      placeholder="Leave blank to keep unchanged"></textarea>
+          </div>
+          <div class="mb-3">
+            <label class="form-label" for="ue_probe">Probe Focus
+              <span class="text-muted fw-normal">(midterm-type only)</span>
+            </label>
+            <textarea class="form-control" id="ue_probe" rows="2"
+                      placeholder="Leave blank to keep unchanged"></textarea>
+          </div>
+          <button type="submit" class="btn btn-primary"
+                  id="updateEntryBtn" data-label="Update Entry">
+            Update Entry
+          </button>
+        </form>
+        <div id="updateEntryResult" class="response-box"></div>
+      </section>
 
-      </div><!-- /accordionCurriculum -->
-    </div><!-- /pane-curriculum -->
+      <!-- ── panel-close ───────────────────────────────────────────────── -->
+      <section id="panel-close" class="portal-panel">
+        <p class="text-muted small mb-3">
+          Archives the curriculum upload selected above: sends one final transcript snapshot to
+          the configured recipients, then permanently cancels every future reminder, exam
+          generation, and transcript send for its entries. This never deletes data —
+          it's a soft archive, not an erasure — but it cannot be undone once sent.
+        </p>
+        <button class="btn btn-danger"
+                id="closeCurriculumBtn" data-label="Close / Archive Curriculum"
+                onclick="closeCurriculum()">
+          Close / Archive Curriculum
+        </button>
+        <div id="closeCurriculumResult" class="response-box"></div>
+      </section>
 
-  </div><!-- /tab-content -->
+    </div><!-- /portal-content -->
+  </main>
+</div><!-- /portal-shell -->
 
-</div><!-- /container -->
-
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 'use strict';
 
+// ── Panel navigation ─────────────────────────────────────────────────────────
+// Replaces the old accordion (Standalone tab) + second accordion (Curriculum
+// tab): every step is now its own panel, switched instantly via the sidebar
+// instead of expanding/collapsing sections on one long scrolling page.
+
+const CURRICULUM_PANELS = new Set(['panel-upload', 'panel-entries', 'panel-add', 'panel-update', 'panel-close']);
+
+const PANEL_META = {
+  'panel-create':     { title: 'Create Curriculum',       crumb: 'Standalone Assessment' },
+  'panel-submit':     { title: 'Submit Answer',           crumb: 'Standalone Assessment' },
+  'panel-results':    { title: 'Get Results',             crumb: 'Standalone Assessment' },
+  'panel-reschedule': { title: 'Reschedule Assessment',   crumb: 'Standalone Assessment' },
+  'panel-upload':     { title: 'Upload Curriculum File',  crumb: 'Curriculum' },
+  'panel-entries':    { title: 'My Entries',              crumb: 'Curriculum' },
+  'panel-add':        { title: 'Add Entry',               crumb: 'Curriculum' },
+  'panel-update':     { title: 'Update Entry',            crumb: 'Curriculum' },
+  'panel-close':      { title: 'Close / Archive',         crumb: 'Curriculum' },
+};
+
+function showPanel(panelId) {
+  document.querySelectorAll('.portal-panel').forEach(p => p.classList.toggle('active', p.id === panelId));
+  document.querySelectorAll('.portal-nav-link').forEach(b => b.classList.toggle('active', b.dataset.panel === panelId));
+
+  const meta = PANEL_META[panelId];
+  if (meta) {
+    document.getElementById('panelTitle').textContent = meta.title;
+    document.getElementById('panelCrumb').textContent = meta.crumb;
+  }
+  document.getElementById('curriculumIdBar').classList.toggle('d-none', !CURRICULUM_PANELS.has(panelId));
+  window.scrollTo({ top: 0 });
+}
+
 // ── URL param pre-fill (email deep links) ────────────────────────────────────
 // Assessment emails link to: {APP_BASE_URL}?assessment_id=...&token=...
-// Pre-fills Submit Answer and Reschedule fields, expands the Submit Answer
-// accordion item (it's collapsed by default), then scrolls to it. Also
-// fetches the assessment to check is_midterm, so the separate Part 1
-// (assignment) answer field only shows up when it's actually needed.
+// Pre-fills Submit Answer and Reschedule fields, switches to the Submit
+// Answer panel, then scrolls to it. Also fetches the assessment to check
+// is_midterm, so the separate Part 1 (assignment) answer field only shows
+// up when it's actually needed.
 document.addEventListener('DOMContentLoaded', async () => {
   const p = new URLSearchParams(window.location.search);
   const aid   = p.get('assessment_id');
@@ -671,11 +734,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     ['s_id', 're_id'].forEach(id => document.getElementById(id).value = aid);
     ['s_token', 're_token'].forEach(id => document.getElementById(id).value = token);
 
-    const collapseEl = document.getElementById('collapseSubmit');
-    bootstrap.Collapse.getOrCreateInstance(collapseEl, { toggle: false }).show();
-    collapseEl.addEventListener('shown.bs.collapse', () => {
-      document.getElementById('submissionBtn').scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }, { once: true });
+    showPanel('panel-submit');
+    document.getElementById('submissionBtn').scrollIntoView({ behavior: 'smooth', block: 'center' });
 
     const { ok, data } = await api(
       `/api/v1/assessments/${encodeURIComponent(aid)}?token=${encodeURIComponent(token)}`
@@ -1042,7 +1102,7 @@ async function viewEntries() {
 
   const cards = data.entries.map(en => renderEntryCard(en)).join('');
 
-  box.innerHTML = `<div class="entries-list">${cards}</div>`;
+  box.innerHTML = `<div class="entries-grid">${cards}</div>`;
 }
 
 function statusBadgeClass(status) {
@@ -1071,7 +1131,27 @@ function renderEntryCard(en) {
     </div>
     ${lateEligible ? `<div id="late-send-result-${en.id}" class="response-box small mt-2"></div>` : ''}`;
 
-  const card = `
+  // The project-submit panel is nested INSIDE the card (not a following
+  // sibling, as it was in the old single-column list) — this is now a CSS
+  // grid, and a sibling would land in whatever the next grid cell happens
+  // to be rather than under its own card.
+  const projectPanel = !held ? '' : `
+    <div id="project-submit-${en.id}" class="d-none project-submit-panel">
+      <h6 class="mb-1">Submit completed project</h6>
+      <p class="text-muted small mb-3">
+        This midterm's exam window stays held until every field below is filled in —
+        filling them all opens it.
+      </p>
+      ${en.pending_completion.map(slot => renderPendingField(en.id, slot)).join('')}
+      <div id="project-submit-hint-${en.id}" class="small text-danger mb-2"></div>
+      <button type="button" class="btn btn-primary btn-sm" onclick="submitProjectResources('${en.id}')"
+              id="project-submit-btn-${en.id}" data-label="Submit" disabled>
+        Submit
+      </button>
+      <div id="project-submit-result-${en.id}" class="response-box"></div>
+    </div>`;
+
+  return `
     <div class="entry-card">
       <div class="entry-card-header">
         <div class="entry-card-topic">${escapeHtml(en.topic)}</div>
@@ -1088,26 +1168,7 @@ function renderEntryCard(en) {
       <div class="entry-card-actions">
         <button type="button" class="btn btn-sm btn-outline-secondary" onclick="editEntry('${en.id}')">Edit →</button>
       </div>
-    </div>`;
-
-  if (!held) return card;
-
-  return card + `
-    <div id="project-submit-${en.id}" class="d-none">
-      <div class="p-3 mb-2 border border-warning-subtle rounded bg-warning-subtle bg-opacity-25">
-        <h6 class="mb-1">Submit completed project</h6>
-        <p class="text-muted small mb-3">
-          This midterm's exam window stays held until every field below is filled in —
-          filling them all opens it.
-        </p>
-        ${en.pending_completion.map(slot => renderPendingField(en.id, slot)).join('')}
-        <div id="project-submit-hint-${en.id}" class="small text-danger mb-2"></div>
-        <button type="button" class="btn btn-primary btn-sm" onclick="submitProjectResources('${en.id}')"
-                id="project-submit-btn-${en.id}" data-label="Submit" disabled>
-          Submit
-        </button>
-        <div id="project-submit-result-${en.id}" class="response-box"></div>
-      </div>
+      ${projectPanel}
     </div>`;
 }
 
@@ -1184,7 +1245,7 @@ function refreshEntriesIfLoaded() {
   // Only re-fetch if the list has actually been shown at least once —
   // otherwise Add/Update Entry would trigger a pointless request for a
   // section the user hasn't opened yet.
-  if (document.getElementById('viewEntriesResult').querySelector('.entries-list')) {
+  if (document.getElementById('viewEntriesResult').querySelector('.entries-grid')) {
     viewEntries();
   }
 }
@@ -1195,7 +1256,7 @@ function refreshEntriesIfLoaded() {
 // (e.g. needs_manual_diagnosis) previously stayed invisible in an open tab
 // indefinitely, with no user action to hook a refresh onto. Skips the
 // refresh while a project-submit panel is expanded, since viewEntries()
-// replaces the whole entries-list box wholesale — polling mid-fill would
+// replaces the whole entries-grid box wholesale — polling mid-fill would
 // silently collapse the panel and drop whatever the user had typed.
 setInterval(() => {
   if (document.querySelector('[id^="project-submit-"]:not(.d-none)')) return;
@@ -1234,7 +1295,7 @@ async function submitProjectResources(entryId) {
   resultBox.style.display = 'block';
 
   if (ok && !data.resources_hold) {
-    // Every field is now filled — the hold cleared. Refresh the table so
+    // Every field is now filled — the hold cleared. Refresh the grid so
     // this entry drops its "held" badge and the submit section.
     viewEntries();
   }
@@ -1242,11 +1303,8 @@ async function submitProjectResources(entryId) {
 
 function editEntry(id) {
   document.getElementById('ue_id').value = id;
-  const collapseEl = document.getElementById('collapseUpdate');
-  bootstrap.Collapse.getOrCreateInstance(collapseEl, { toggle: false }).show();
-  collapseEl.addEventListener('shown.bs.collapse', () => {
-    document.getElementById('ue_id').scrollIntoView({ behavior: 'smooth', block: 'center' });
-  }, { once: true });
+  showPanel('panel-update');
+  document.getElementById('ue_id').scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
 // ── C3. Add Entry ─────────────────────────────────────────────────────────────
