@@ -68,7 +68,9 @@ NEW_COMPLETION_DATE = NEW_DUE_DATE.date()
 db = SessionLocal()
 try:
     settings = get_settings()
-    scheduler_service = SchedulerService(db, get_scheduler_adapter())
+    adapter = get_scheduler_adapter()
+    adapter.start()  # idempotent; required so this stand-alone process's adapter is attached to the live jobstore
+    scheduler_service = SchedulerService(db, adapter)
     scheduled_at = datetime.utcnow() + timedelta(minutes=1)
     reminder_at = NEW_DUE_DATE - timedelta(hours=settings.entry_reminder_hours_before_deadline)
 
