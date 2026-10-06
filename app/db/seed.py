@@ -29,6 +29,13 @@ logger = logging.getLogger(__name__)
 # resource_guidance is "" for standalone curricula (unchanged rendering) and
 # a per-resource search-then-fetch / general-knowledge instruction block for
 # curriculum-upload Assessment-type entries.
+#
+# Format (v2.0): Section 1 is 5 MCQs (30 pts, no partial credit, graded
+# deterministically — see app.adapters.anthropic_llm._build_mcq_project_fields
+# and GradingService._grade_mcq_project); Section 2 is one coding project
+# (70 pts, criteria-based rubric). Replaces the prior
+# coding-problem/written-question/mixed branching entirely — every
+# tech-concept assessment now gets this same two-section shape.
 _ASSESSMENT_GENERATION = """\
 You are an expert technical assessment designer for a software engineering \
 learning platform.
@@ -43,39 +50,73 @@ Curriculum Materials (what the student studied):
 
 {resource_guidance}
 
-IMPORTANT — choose the right assessment FORMAT based on the curriculum:
+Design a two-section assessment:
 
-1. CODING / IMPLEMENTATION-FOCUSED curriculum
-   Indicators: building components, writing code, implementing features, \
-creating apps, practicing a framework or language, working with APIs or \
-data structures.
-   → Generate a TIMED CODING PROBLEM. State the problem clearly with \
-requirements, constraints, and example inputs/outputs (if applicable). \
-Frame it as: "You have X minutes to implement the following…". \
-Do NOT ask written explanation questions — the code is the answer.
-   → Set duration_minutes to 60–120 depending on complexity.
+SECTION 1 — 5 Multiple-Choice Questions (30 points: 6 points each, no \
+partial credit)
+Each question must:
+- Test understanding of the concept, not surface trivia — ask "why does X \
+happen" or "what would happen if", not "what is the definition of X".
+- Have exactly 4 options with exactly ONE correct answer.
+- Have 3 genuinely plausible wrong answers (distractors a student who \
+half-understands the concept could pick) — never an obviously-wrong \
+throwaway option.
+- Include an explanation of why the correct option is right and why each \
+of the other 3 is wrong — this is NEVER shown to the student during the \
+exam; it is used only for grading feedback afterward.
+- Be answerable without writing any code — conceptual understanding only.
 
-2. CONCEPTUAL / THEORETICAL curriculum
-   Indicators: reading documentation, studying concepts, understanding \
-architecture, comparing approaches, reading articles or books.
-   → Use written questions: explain, compare, describe trade-offs, \
-give examples. No coding required.
-   → Set duration_minutes to 45–90.
+SECTION 2 — 1 Coding Project (70 points, broken into 4-6 checkable criteria)
+The project must:
+- Be built AROUND the concept being assessed, not merely use it in \
+passing. If the topic is "Context and Lifting State", the project IS a \
+state-sharing problem that can only be cleanly solved with those tools. \
+If the topic is "Browser Internals", the project measures and \
+demonstrates a reflow/repaint problem and fixes it. The assessed concept \
+must be the reason the project exists, not an incidental detail of it.
+- Be scoped to 60-90 minutes of focused work — one focused implementation \
+proving understanding of one core idea, not a full application.
+- Allow ordinary supporting concepts (other hooks, basic CSS, standard \
+library calls, etc.) without those becoming the point of the exercise.
+- Include a starter scaffold inline (as a fenced code block within \
+project_text) where it reduces setup friction without giving away the \
+solution — especially valuable for boilerplate-heavy environments (React, \
+TypeScript). Omit it when the topic needs no scaffolding.
+- Break project_criteria into 4-6 sub-criteria whose point values sum to \
+EXACTLY 70. Each criterion's description must be a single, checkable fact \
+about the submitted code — e.g. "The Context Provider wraps every \
+consumer component, not just one of them" — never a vague quality \
+judgment like "code quality is good".
 
-3. MIXED curriculum (coding practice + theory)
-   → Combine: 1–2 short written questions AND 1 coding exercise.
-   → Set duration_minutes to 90–120.
-
-Infer the format entirely from the curriculum materials above. \
-Do not default to written questions for coding-focused content.
+Infer the project's technical shape (React, backend API, CLI tool, etc.) \
+entirely from the curriculum materials above.
 
 Respond with a single JSON object containing exactly these fields:
 {{
-  "assessment_text": "The full assessment presented to the student. Use markdown formatting. For coding assessments: state the problem, requirements, constraints, and examples clearly. For written assessments: number each question. For mixed: separate the sections with headings.",
-  "rubric": "A detailed marking rubric. For coding: describe what a correct implementation looks like, edge cases that must be handled, and what partial credit covers. For written: per-question expected answers with full/partial/no marks.",
+  "mcqs": [
+    {{
+      "question": "Why does ... ?",
+      "options": ["Option A text", "Option B text", "Option C text", "Option D text"],
+      "correct_option": "B",
+      "explanation": "Why B is correct, and specifically why A, C, and D are each wrong."
+    }}
+    // ... exactly 5 of these
+  ],
+  "project_text": "The full project prompt presented to the student, in markdown. State the problem, requirements, constraints, and (if useful) a starter scaffold as a fenced code block. Do NOT list point values here — those belong only in project_criteria.",
+  "project_criteria": [
+    {{"description": "One single, checkable fact about the submitted code.", "points": 15}}
+    // ... 4-6 of these, points summing to exactly 70
+  ],
   "duration_minutes": 90
 }}
 
+Rules:
+- mcqs must contain exactly 5 entries, each with exactly 4 options and a \
+correct_option of exactly "A", "B", "C", or "D" (matching the option's \
+position: A=index 0, B=index 1, C=index 2, D=index 3).
+- project_criteria must contain 4-6 entries whose "points" sum to exactly 70.
+- duration_minutes covers only Section 2 (the project) — set it to 60-90 \
+based on project complexity.
 Return ONLY the JSON object. Do not include any other text before or after it.\
 """
 
@@ -110,6 +151,11 @@ Return ONLY the JSON object. Do not include any other text before or after it.\
 # resource_guidance is "" for standalone curricula (unchanged rendering) and
 # a per-resource search-then-fetch / general-knowledge instruction block for
 # curriculum-upload Assessment-type entries retaking their exam.
+#
+# Format (v2.0): same two-section MCQ + Coding Project shape as
+# _ASSESSMENT_GENERATION — see its comment for the rationale. A retest gets
+# a fresh set of 5 MCQs and a fresh project, both weighted toward the
+# previously-identified weak areas.
 _RETEST_GENERATION = """\
 You are an expert technical assessment designer for a software engineering \
 learning platform.
@@ -129,25 +175,50 @@ Previous Attempt Results:
 - Previous mastery score: {previous_mastery_score}%
 - Identified weak areas: {weak_areas}
 
-IMPORTANT — match the retest FORMAT to the curriculum type (same rules as the original assessment):
-- CODING / IMPLEMENTATION-FOCUSED → timed coding problem targeting the weak areas.
-- CONCEPTUAL / THEORETICAL → written questions on the weak areas.
-- MIXED → 1 written question + 1 coding exercise covering the weak areas.
+Design a two-section retest, using DIFFERENT questions and a different \
+project from any previous attempt:
 
-Design a retest that:
-- Focuses primarily (70 %+) on the student's identified weak areas
-- Includes some questions on stronger areas to confirm retained knowledge
-- Uses different questions and scenarios from previous attempts
-- Is calibrated to let an improved student demonstrate that improvement
+SECTION 1 — 5 Multiple-Choice Questions (30 points: 6 points each, no \
+partial credit)
+Weight at least 3 of the 5 questions toward the identified weak areas; the \
+remainder may confirm retained understanding of stronger areas. Same \
+quality bar as a first attempt: test understanding (not trivia), exactly 4 \
+genuinely plausible options, and a hidden per-option explanation never \
+shown to the student during the exam.
+
+SECTION 2 — 1 Coding Project (70 points, broken into 4-6 checkable criteria)
+Build the project primarily (70%+) around the student's identified weak \
+areas, calibrated to let an improved student demonstrate that improvement \
+— not a harder version of the same exercise, a different exercise probing \
+the same underlying concept. Same requirements as a first attempt: scoped \
+to 60-90 minutes, checkable criteria summing to exactly 70, starter \
+scaffold inline where it reduces setup friction.
 
 Respond with a single JSON object containing exactly these fields:
 {{
-  "assessment_text": "The full retest presented to the student. Use markdown formatting. For coding retests: state the problem and requirements clearly. For written retests: number each question.",
-  "rubric": "A detailed marking rubric. For coding: what a correct implementation covers, edge cases, partial credit. For written: per-question expected answers with full/partial/no marks.",
+  "mcqs": [
+    {{
+      "question": "Why does ... ?",
+      "options": ["Option A text", "Option B text", "Option C text", "Option D text"],
+      "correct_option": "B",
+      "explanation": "Why B is correct, and specifically why A, C, and D are each wrong."
+    }}
+    // ... exactly 5 of these
+  ],
+  "project_text": "The full retest project prompt presented to the student, in markdown. Do NOT list point values here.",
+  "project_criteria": [
+    {{"description": "One single, checkable fact about the submitted code.", "points": 15}}
+    // ... 4-6 of these, points summing to exactly 70
+  ],
   "duration_minutes": 90
 }}
 
-Set duration_minutes based on the complexity of the weak areas (60–120 minutes).
+Rules:
+- mcqs must contain exactly 5 entries, each with exactly 4 options and a \
+correct_option of exactly "A", "B", "C", or "D".
+- project_criteria must contain 4-6 entries whose "points" sum to exactly 70.
+- duration_minutes covers only Section 2, set based on the complexity of \
+the weak areas (60-90 minutes).
 Return ONLY the JSON object. Do not include any other text before or after it.\
 """
 
@@ -371,6 +442,97 @@ specific gaps, and give one actionable improvement suggestion
 Return ONLY the JSON object. Do not include any other text before or after it.\
 """
 
+# Variables: {questions_json}, {answer_key_json}, {submitted_answers_json}
+# Used by GradingService._grade_mcq_project for the new MCQ + Coding
+# Project assessment format. Scoring is NOT this template's job — the
+# correct/incorrect decision is made deterministically in Python by
+# comparing parsed_answers against the stored correct_option. This call's
+# only job is: (1) normalize each submitted answer to a canonical option
+# letter (handles a student answering with free text instead of a clean
+# letter), and (2) write one feedback line per question.
+_MCQ_GRADING = """\
+You are grading the multiple-choice section of a technical assessment.
+
+Questions and options (in order):
+{questions_json}
+
+Answer key (in the same order — NEVER reveal this to the student directly, \
+only use it to write feedback):
+{answer_key_json}
+
+Student's submitted answers (in the same order — each is whatever the \
+student typed or selected; it may already be a clean option letter, or it \
+may be free text referring to one of the options):
+{submitted_answers_json}
+
+For each question, in order:
+1. Determine which option (A, B, C, or D) the student's submitted answer \
+refers to. If they submitted a letter already, use it directly. If they \
+submitted free text, match it to the option it clearly refers to.
+2. Write one feedback sentence: if they matched the correct option, a \
+short confirmation; if not, state the correct option and adapt the answer \
+key's explanation into feedback for the student.
+
+Respond with a single JSON object containing exactly these fields:
+{{
+  "parsed_answers": ["B", "A", "D", "C", "B"],
+  "feedback": [
+    "Correct — ...",
+    "Not quite — the correct answer is A because ...",
+    "..."
+  ]
+}}
+
+Rules:
+- parsed_answers must contain exactly 5 entries, each exactly "A", "B", "C", or "D".
+- feedback must contain exactly 5 entries, in the same order as the questions.
+Return ONLY the JSON object. Do not include any other text before or after it.\
+"""
+
+# Variables: {project_text}, {project_criteria_json}, {curriculum_content},
+#            {submission_content}
+# Used by GradingService._grade_mcq_project for the new MCQ + Coding
+# Project assessment format's Section 2. Scored directly in the criteria's
+# own point space (summing to 70) rather than as a 0-100 mastery_score —
+# GradingService combines this with the MCQ section's score (both already
+# in the same point space) without renormalizing either one.
+_PROJECT_GRADING = """\
+You are an expert technical assessor for a software engineering learning \
+platform, grading the coding-project section of an assessment.
+
+Project Prompt:
+{project_text}
+
+Grading Criteria (each is a single checkable fact about the code — award \
+points for a criterion only if the submitted code actually satisfies it):
+{project_criteria_json}
+
+Curriculum Reference (for context):
+{curriculum_content}
+
+Student Submission:
+{submission_content}
+
+Evaluate the submission against each criterion independently and sum the \
+points earned.
+
+Respond with a single JSON object containing exactly these fields:
+{{
+  "project_score": 58.0,
+  "weak_areas": ["specific concept 1", "specific concept 2"],
+  "overall_feedback": "Detailed, constructive feedback for the student, referencing which criteria were and weren't met."
+}}
+
+Rules:
+- project_score must be a number between 0.0 and the sum of the given \
+criteria's points.
+- weak_areas lists 0-5 specific topics where the student showed gaps \
+(use an empty list [] if they demonstrated strong mastery throughout).
+- overall_feedback should be 2-4 sentences: acknowledge strengths, name \
+specific unmet criteria, and give one actionable improvement suggestion.
+Return ONLY the JSON object. Do not include any other text before or after it.\
+"""
+
 # Variables: {reason}
 _RESCHEDULE_CLASSIFICATION = """\
 You are an assessment coordinator evaluating a student's request to reschedule \
@@ -402,13 +564,15 @@ Return ONLY the JSON object. Do not include any other text before or after it.\
 # Maps slug → (version, body). Version is bumped when the prompt changes
 # in a way that meaningfully affects LLM behaviour.
 SEED_TEMPLATES: Final[dict[str, tuple[str, str]]] = {
-    "assessment_generation":     ("1.2", _ASSESSMENT_GENERATION),
+    "assessment_generation":     ("2.0", _ASSESSMENT_GENERATION),
     "curriculum_analysis":       ("1.0", _CURRICULUM_ANALYSIS),
-    "retest_generation":         ("1.2", _RETEST_GENERATION),
+    "retest_generation":         ("2.0", _RETEST_GENERATION),
     "midterm_generation":        ("1.1", _MIDTERM_GENERATION),
     "midterm_retest_generation": ("1.1", _MIDTERM_RETEST_GENERATION),
     "grading":                   ("1.0", _GRADING),
     "midterm_grading":           ("1.1", _MIDTERM_GRADING),
+    "mcq_grading":                ("1.0", _MCQ_GRADING),
+    "project_grading":            ("1.0", _PROJECT_GRADING),
     "reschedule_classification": ("1.0", _RESCHEDULE_CLASSIFICATION),
 }
 
@@ -424,6 +588,11 @@ REQUIRED_SLUGS: Final[frozenset[str]] = frozenset({
     # grading fails outright for every one of them, with no other signal.
     "midterm_generation",
     "midterm_grading",
+    # assessment_generation/retest_generation now always produce the MCQ +
+    # Coding Project format (v2.0) — grading every such assessment fails
+    # outright without these two.
+    "mcq_grading",
+    "project_grading",
 })
 
 

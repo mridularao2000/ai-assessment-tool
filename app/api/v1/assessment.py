@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -163,13 +164,20 @@ def get_assessment(
             assessment_svc.generate_assessment_content(assessment)
         assessment_svc.db.commit()
 
+    is_mcq_format = not is_midterm and assessment.part1_text is not None
+
     return AssessmentDetailResponse(
         assessment_id=assessment.id,
         topic=assessment.curriculum.topic,
-        assessment_text=(assessment.part1_text if is_midterm else assessment.assessment_text),
+        assessment_text=(
+            assessment.part1_text if is_midterm
+            else (assessment.part2_text if is_mcq_format else assessment.assessment_text)
+        ),
         duration_minutes=assessment.duration_minutes,
         scheduled_at=assessment.scheduled_at,
         due_date=assessment.due_date,
         status=assessment.status,
         is_midterm=is_midterm,
+        is_mcq_format=is_mcq_format,
+        mcqs=json.loads(assessment.part1_text) if is_mcq_format else None,
     )

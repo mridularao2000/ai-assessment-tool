@@ -52,6 +52,7 @@ class SubmissionService:
         text_content: Optional[str] = None,
         uploaded_file: Optional[tuple[str, bytes]] = None,
         part1_text_content: Optional[str] = None,
+        mcq_answers: Optional[list[str]] = None,
     ) -> Submission:
         """Validate, persist, and schedule grading for a new submission.
 
@@ -60,6 +61,17 @@ class SubmissionService:
         text_content/uploaded_file continue to represent Part 2 (the
         project) exactly as for any other submission. For anything else
         (standalone or Assessment-type), part1_text_content must be absent.
+
+        For an assessment generated under the new MCQ + Coding Project
+        format (Assessment.part1_text is not None and it isn't a
+        Midterm), mcq_answers answers Section 1 (the 5 MCQs) and is
+        required, with exactly 5 entries; submission_type/github_url/
+        text_content/uploaded_file represent Section 2 (the project)
+        exactly as for any other submission. For anything else
+        (standalone/Assessment-type still on the legacy format, or a
+        Midterm), mcq_answers must be absent. Mutually exclusive with
+        part1_text_content by construction — an assessment is never both
+        a Midterm and MCQ-format.
 
         Steps:
           1. Load Assessment by assessment_id.
@@ -106,6 +118,7 @@ class SubmissionService:
         upload_id = assessment.curriculum.upload_id
 
         is_midterm = assessment.curriculum.entry_type == CurriculumEntryType.midterm
+        is_mcq_format = not is_midterm and assessment.part1_text is not None
 
         is_late = False
         if assessment.status == AssessmentStatus.expired:
@@ -146,6 +159,22 @@ class SubmissionService:
                 "part1_text_content must not be supplied."
             )
 
+        if is_mcq_format and mcq_answers is None:
+            raise InvalidStateError(
+                f"Assessment {assessment_id!r} is MCQ + Coding Project format — "
+                "mcq_answers (answering Section 1) is required."
+            )
+        if is_mcq_format and len(mcq_answers) != 5:
+            raise InvalidStateError(
+                f"Assessment {assessment_id!r} expects exactly 5 mcq_answers, "
+                f"got {len(mcq_answers)}."
+            )
+        if not is_mcq_format and mcq_answers is not None:
+            raise InvalidStateError(
+                f"Assessment {assessment_id!r} is not MCQ + Coding Project "
+                "format — mcq_answers must not be supplied."
+            )
+
         file_path: Optional[str] = None
         if submission_type == SubmissionType.file:
             file_path = self._save_file(uploaded_file)
@@ -164,6 +193,7 @@ class SubmissionService:
             ),
             file_path=file_path,
             part1_text_content=part1_text_content if is_midterm else None,
+            mcq_answers=mcq_answers if is_mcq_format else None,
         )
         self.db.add(submission)
         self.db.flush()  # populate submission.id before status transition

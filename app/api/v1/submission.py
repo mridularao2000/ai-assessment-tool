@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -22,11 +23,27 @@ def create_submission(
     text_content: Annotated[Optional[str], Form()] = None,
     file: Annotated[Optional[UploadFile], File()] = None,
     part1_text_content: Annotated[Optional[str], Form()] = None,
+    # JSON-encoded array of 5 option letters, e.g. '["A","C","B","D","A"]' —
+    # see SubmissionService.create's mcq_answers docstring. A plain string
+    # Form field (not List[str] = Form(...)) since this is the MCQ +
+    # Coding Project format's Section 1 answer set, not a repeated field.
+    mcq_answers: Annotated[Optional[str], Form()] = None,
     submission_svc: SubmissionService = Depends(get_submission_service),
 ) -> SubmissionResponse:
     uploaded_file = None
     if file is not None:
         uploaded_file = (file.filename or "upload", file.file.read())
+
+    parsed_mcq_answers: Optional[list[str]] = None
+    if mcq_answers is not None:
+        try:
+            parsed_mcq_answers = json.loads(mcq_answers)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=422, detail="mcq_answers must be a JSON array of strings.")
+        if not isinstance(parsed_mcq_answers, list) or not all(
+            isinstance(a, str) for a in parsed_mcq_answers
+        ):
+            raise HTTPException(status_code=422, detail="mcq_answers must be a JSON array of strings.")
 
     try:
         submission = submission_svc.create(
@@ -37,6 +54,7 @@ def create_submission(
             text_content=text_content,
             uploaded_file=uploaded_file,
             part1_text_content=part1_text_content,
+            mcq_answers=parsed_mcq_answers,
         )
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))

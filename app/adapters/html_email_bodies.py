@@ -376,7 +376,9 @@ class HtmlEmailBodyMixin:
       <td style="padding:5px 6px;text-align:right;border-bottom:1px solid {rule_soft};font-family:{mono};font-size:12px">{ch}</td>
       <td style="padding:5px 6px;text-align:right;border-bottom:1px solid {rule_soft};font-family:{mono};font-size:12px">{row.max_marks:.2f}</td>
       <td style="padding:5px 6px;border-bottom:1px solid {rule_soft};font-family:{mono};font-size:12px">{_e(row.status_label)}</td>
-      <td style="padding:5px 6px;text-align:right;border-bottom:1px solid {rule_soft};font-family:{mono};font-size:12px">{_pts(row.points)}</td>
+      <td style="padding:5px 6px;text-align:right;border-bottom:1px solid {rule_soft};font-family:{mono};font-size:12px">{_pts(row.points)}{
+          f'<br><span style="font-size:10px;color:#6c757d">{_e(row.score_breakdown)}</span>' if row.score_breakdown else ''
+      }</td>
     </tr>"""
 
         omitted = data.total_entry_count - data.resolved_count

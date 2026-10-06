@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from sqlalchemy.orm import Session, joinedload
 
 from app.config import get_settings
 from app.exceptions import IngestionError, InvalidStateError, NotFoundError
-from app.interfaces.llm import GradingRequest, LLMInterface, MidtermGradingRequest, llm_log_context
+from app.interfaces.llm import (
+    GradingRequest,
+    LLMInterface,
+    MCQGradingRequest,
+    MidtermGradingRequest,
+    ProjectGradingRequest,
+    llm_log_context,
+)
 from app.models.assessment import Assessment, AssessmentStatus
 from app.models.curriculum import Curriculum, CurriculumEntryType
 from app.models.grade import Grade
@@ -116,9 +124,15 @@ class GradingService:
         else:
             submission_content = self._read_file(submission.file_path)
 
-        # ── 3-4. Grade + build Grade fields (branches by entry_type) ───────────
+        # ── 3-4. Grade + build Grade fields (branches by entry_type / format) ──
         if curriculum.entry_type == CurriculumEntryType.midterm:
             grade = self._grade_midterm(submission, assessment, curriculum, submission_content)
+        elif assessment.part1_text is not None:
+            # New MCQ + Coding Project format (see AssessmentGenerationResult) —
+            # never true for a Midterm (handled above), so this is
+            # unambiguous: any non-Midterm assessment with part1_text
+            # populated was generated under this format.
+            grade = self._grade_mcq_project(submission, assessment, curriculum, submission_content)
         else:
             prompt_template = (
                 self.db.query(PromptTemplate)
@@ -250,6 +264,124 @@ class GradingService:
         self.db.flush()
         return grade
 
+    def _grade_mcq_project(
+        self, submission: Submission, assessment: Assessment, curriculum: Curriculum, project_content: str
+    ) -> Grade:
+        """Grade a new-format (MCQ + Coding Project) assessment and build
+        (but don't commit) the resulting Grade row.
+
+        Section 1 (MCQs) is scored deterministically in Python — comparing
+        each parsed answer against the stored correct_option — never by
+        the LLM (see MCQGradingRequest's docstring); the one LLM call for
+        this section only normalizes free-form answers and writes
+        feedback. Section 2 (the project) is graded by a dedicated
+        rubric-based LLM call, scored directly in its own 0-70 point
+        space. part1_score/part2_score reuse the exact columns a Midterm
+        grade uses for its own two parts — same shape, different
+        semantics, disambiguated by Submission.mcq_answers being set.
+
+        mastery_score = part1_score + part2_score is already 0-100 by
+        construction (30 + 70), so score_earned for entries uses the
+        IDENTICAL mastery_score/100*max_marks formula every other branch
+        uses — the MCQ/project split is a display/scoring-mechanism
+        decomposition, never a change to how GPA weighting is computed
+        (see Grade.score_earned's docstring and compute_gpa()).
+        """
+        mcq_prompt_template = (
+            self.db.query(PromptTemplate)
+            .filter(PromptTemplate.slug == "mcq_grading", PromptTemplate.is_active.is_(True))
+            .first()
+        )
+        if mcq_prompt_template is None:
+            raise NotFoundError("No active 'mcq_grading' prompt template found.")
+
+        project_prompt_template = (
+            self.db.query(PromptTemplate)
+            .filter(PromptTemplate.slug == "project_grading", PromptTemplate.is_active.is_(True))
+            .first()
+        )
+        if project_prompt_template is None:
+            raise NotFoundError("No active 'project_grading' prompt template found.")
+
+        questions = json.loads(assessment.part1_text)   # [{"question","options"}] x5
+        answer_key = json.loads(assessment.part1_rubric)  # [{"correct_option","explanation"}] x5
+        submitted_answers = submission.mcq_answers or []
+        if len(submitted_answers) != 5:
+            raise InvalidStateError(
+                f"Submission {submission.id!r} has {len(submitted_answers)} "
+                "mcq_answers, expected exactly 5."
+            )
+
+        with llm_log_context(
+            f"assessment={assessment.id} curriculum={curriculum.id} "
+            f"topic={curriculum.topic!r} (mcq grading)"
+        ):
+            mcq_result = self.llm.grade_mcq_section(
+                MCQGradingRequest(
+                    questions=questions,
+                    answer_key=answer_key,
+                    submitted_answers=submitted_answers,
+                    prompt_template_body=mcq_prompt_template.body,
+                )
+            )
+
+        mcq_score = 0.0
+        weak_mcq_topics: list[str] = []
+        for question, key, parsed in zip(questions, answer_key, mcq_result.parsed_answers):
+            if parsed == key["correct_option"]:
+                mcq_score += 6.0
+            else:
+                weak_mcq_topics.append(str(question["question"])[:80])
+
+        criteria = json.loads(assessment.part2_rubric)  # [{"description","points"}] x4-6
+
+        with llm_log_context(
+            f"assessment={assessment.id} curriculum={curriculum.id} "
+            f"topic={curriculum.topic!r} (project grading)"
+        ):
+            project_result = self.llm.grade_project(
+                ProjectGradingRequest(
+                    project_text=assessment.part2_text or "",
+                    project_criteria=criteria,
+                    curriculum_content=curriculum.extracted_content or "",
+                    submission_content=project_content,
+                    prompt_template_body=project_prompt_template.body,
+                    github_url=(
+                        submission.github_url
+                        if submission.submission_type == SubmissionType.github_url
+                        else None
+                    ),
+                )
+            )
+
+        mastery_score = mcq_score + project_result.project_score  # 0-100 by construction (30 + 70)
+
+        is_entry = curriculum.entry_type is not None
+        score_earned = (mastery_score / 100.0 * (curriculum.max_marks or 0.0)) if is_entry else None
+        max_marks = curriculum.max_marks if is_entry else None
+
+        overall_feedback = (
+            f"MCQ Section ({mcq_score:.0f}/30): " + " ".join(mcq_result.feedback)
+            + f"\n\nCoding Project ({project_result.project_score:.1f}/70): "
+            + project_result.overall_feedback
+        )
+        weak_areas = weak_mcq_topics + list(project_result.weak_areas)
+
+        grade = Grade(
+            submission_id=submission.id,
+            mastery_score=mastery_score,
+            weak_areas=weak_areas,
+            overall_feedback=overall_feedback,
+            grading_prompt_id=project_prompt_template.id,
+            part1_score=mcq_score,
+            part2_score=project_result.project_score,
+            score_earned=score_earned,
+            max_marks=max_marks,
+        )
+        self.db.add(grade)
+        self.db.flush()
+        return grade
+
     # ── Internal helpers ───────────────────────────────────────────────────────
 
     def _read_file(self, file_path: str | None) -> str:
@@ -292,10 +424,13 @@ class GradingService:
 
         settings = get_settings()
         passed = grade.mastery_score >= settings.mastery_threshold
+        is_mcq_format = grade.submission.mcq_answers is not None
 
         return GradeResponse(
             mastery_score=grade.mastery_score,
             overall_feedback=grade.overall_feedback,
             weak_areas=grade.weak_areas,
             passed=passed,
+            mcq_score=grade.part1_score if is_mcq_format else None,
+            project_score=grade.part2_score if is_mcq_format else None,
         )

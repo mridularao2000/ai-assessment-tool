@@ -19,3 +19,10 @@ class GradeResponse(BaseModel):
     overall_feedback: str
     weak_areas: Optional[list[str]] = None
     passed: bool
+    # Populated only for the new MCQ + Coding Project format (see
+    # AssessmentGenerationResult) — None for a legacy-format or Midterm
+    # grade, even though Midterm grades also happen to populate
+    # Grade.part1_score/part2_score internally; this field is specifically
+    # the MCQ/project split, not a generic alias for those columns.
+    mcq_score: Optional[float] = Field(None, ge=0.0, le=30.0)
+    project_score: Optional[float] = Field(None, ge=0.0, le=70.0)

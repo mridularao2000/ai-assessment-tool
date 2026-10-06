@@ -48,6 +48,8 @@ from app.interfaces.llm import (
     LLMToolBudgetExceededError,
     LLMUnavailableError,
     LLMValidationError,
+    MCQGradingRequest,
+    MCQGradingResult,
     MidtermGenerationRequest,
     current_llm_log_context,
     filter_fetchable_resources,
@@ -55,6 +57,8 @@ from app.interfaces.llm import (
     MidtermGradingRequest,
     MidtermGradingResult,
     MidtermRetestGenerationRequest,
+    ProjectGradingRequest,
+    ProjectGradingResult,
     RescheduleClassificationRequest,
     RescheduleClassificationResult,
     RescheduleCategory,
@@ -377,6 +381,50 @@ class AnthropicLLMAdapter:
                     exc = repaired_exc
             raise LLMValidationError(f"Response is not valid JSON: {exc}\n\nRaw: {text}") from exc
 
+    def _build_mcq_project_fields(self, data: dict[str, Any]) -> tuple[str, str, str, str]:
+        """Validate and split the MCQ + Coding Project generation JSON shape
+        (see the assessment_generation/retest_generation prompt templates)
+        into the four part1/part2 text/rubric strings
+        AssessmentGenerationResult stores — shared by generate_assessment
+        and generate_retest, which produce the identical output shape.
+
+        Raises ValueError (caught by the caller and wrapped in
+        LLMValidationError, exactly like every other schema-mismatch check
+        in this file) on any structural violation — exactly 5 MCQs, each
+        with exactly 4 options and a correct_option of A-D, and
+        project_criteria summing to 70 across 4-6 entries.
+        """
+        mcqs = data["mcqs"]
+        if len(mcqs) != 5:
+            raise ValueError(f"Expected exactly 5 mcqs, got {len(mcqs)}")
+        for i, m in enumerate(mcqs):
+            options = m["options"]
+            if len(options) != 4:
+                raise ValueError(f"mcqs[{i}] expected exactly 4 options, got {len(options)}")
+            if m["correct_option"] not in ("A", "B", "C", "D"):
+                raise ValueError(
+                    f"mcqs[{i}] correct_option must be one of A/B/C/D, got {m['correct_option']!r}"
+                )
+
+        criteria = data["project_criteria"]
+        if not (4 <= len(criteria) <= 6):
+            raise ValueError(f"Expected 4-6 project_criteria, got {len(criteria)}")
+        total_points = sum(float(c["points"]) for c in criteria)
+        if abs(total_points - 70.0) > 0.01:
+            raise ValueError(f"project_criteria points must sum to 70, got {total_points}")
+
+        part1_text = json.dumps(
+            [{"question": str(m["question"]), "options": list(m["options"])} for m in mcqs]
+        )
+        part1_rubric = json.dumps(
+            [{"correct_option": str(m["correct_option"]), "explanation": str(m["explanation"])} for m in mcqs]
+        )
+        part2_text = str(data["project_text"])
+        part2_rubric = json.dumps(
+            [{"description": str(c["description"]), "points": float(c["points"])} for c in criteria]
+        )
+        return part1_text, part1_rubric, part2_text, part2_rubric
+
     def _render(self, template_body: str, **kwargs: Any) -> str:
         """Render a prompt template body with keyword substitution."""
         try:
@@ -482,9 +530,12 @@ class AnthropicLLMAdapter:
             raw = self._call(prompt, max_tokens=16000, tools=tools, budget=budget)
             data = self._parse_json(raw)
             try:
+                part1_text, part1_rubric, part2_text, part2_rubric = self._build_mcq_project_fields(data)
                 return AssessmentGenerationResult(
-                    assessment_text=str(data["assessment_text"]),
-                    rubric=str(data["rubric"]),
+                    part1_text=part1_text,
+                    part1_rubric=part1_rubric,
+                    part2_text=part2_text,
+                    part2_rubric=part2_rubric,
                     duration_minutes=int(data["duration_minutes"]),
                 )
             except (KeyError, TypeError, ValueError) as exc:
@@ -567,9 +618,12 @@ class AnthropicLLMAdapter:
             raw = self._call(prompt, max_tokens=16000, tools=tools, budget=budget)
             data = self._parse_json(raw)
             try:
+                part1_text, part1_rubric, part2_text, part2_rubric = self._build_mcq_project_fields(data)
                 return AssessmentGenerationResult(
-                    assessment_text=str(data["assessment_text"]),
-                    rubric=str(data["rubric"]),
+                    part1_text=part1_text,
+                    part1_rubric=part1_rubric,
+                    part2_text=part2_text,
+                    part2_rubric=part2_rubric,
                     duration_minutes=int(data["duration_minutes"]),
                 )
             except (KeyError, TypeError, ValueError) as exc:
@@ -663,6 +717,87 @@ class AnthropicLLMAdapter:
                 )
             except (KeyError, TypeError, ValueError) as exc:
                 raise LLMValidationError(f"grade_submission schema mismatch: {exc}\n\nData: {data}") from exc
+
+        if request.github_url:
+            return self._retry(
+                _attempt, request,
+                max_attempts=_TOOL_PATH_MAX_ATTEMPTS, budget_ceiling=self._tool_call_budget_tokens,
+            )
+        return self._retry(_attempt, request)
+
+    def grade_mcq_section(self, request: MCQGradingRequest) -> MCQGradingResult:
+        """One call for the whole MCQ section (never one per question —
+        see MCQGradingRequest's docstring). No tools: parsing a student's
+        5 answers against the given questions/answer_key needs nothing
+        external. Scoring is NOT this method's job — GradingService
+        compares parsed_answers against the answer key itself; this only
+        normalizes free-form answers to a canonical letter and writes the
+        feedback line."""
+
+        def _attempt(
+            req: MCQGradingRequest, attempt: int, budget: "_CallBudget | None" = None
+        ) -> MCQGradingResult:
+            prompt = self._render(
+                req.prompt_template_body,
+                questions_json=json.dumps(req.questions),
+                answer_key_json=json.dumps(req.answer_key),
+                submitted_answers_json=json.dumps(req.submitted_answers),
+            )
+            if attempt > 0:
+                prompt += _RETRY_NUDGE_PLAIN
+            raw = self._call(prompt, max_tokens=2048)
+            data = self._parse_json(raw)
+            try:
+                parsed_answers = [str(a) for a in data["parsed_answers"]]
+                feedback = [str(f) for f in data["feedback"]]
+                if len(parsed_answers) != 5 or len(feedback) != 5:
+                    raise ValueError(
+                        f"Expected 5 parsed_answers and 5 feedback entries, "
+                        f"got {len(parsed_answers)} and {len(feedback)}"
+                    )
+                for a in parsed_answers:
+                    if a not in ("A", "B", "C", "D"):
+                        raise ValueError(f"parsed_answers entry must be one of A/B/C/D, got {a!r}")
+                return MCQGradingResult(parsed_answers=parsed_answers, feedback=feedback)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise LLMValidationError(f"grade_mcq_section schema mismatch: {exc}\n\nData: {data}") from exc
+
+        return self._retry(_attempt, request)
+
+    def grade_project(self, request: ProjectGradingRequest) -> ProjectGradingResult:
+        """Grades Part 2 (the coding project) of a new-format assessment
+        against project_criteria — same LLM-based rubric approach as
+        grade_submission, scored directly in the criteria's own point
+        space (summing to 70) rather than as a 0-100 mastery_score."""
+        max_points = sum(float(c["points"]) for c in request.project_criteria)
+
+        def _attempt(
+            req: ProjectGradingRequest, attempt: int, budget: "_CallBudget | None" = None
+        ) -> ProjectGradingResult:
+            prompt = self._render(
+                req.prompt_template_body,
+                project_text=req.project_text,
+                project_criteria_json=json.dumps(req.project_criteria),
+                curriculum_content=req.curriculum_content,
+                submission_content=req.submission_content,
+            )
+            if attempt > 0:
+                prompt += _RETRY_NUDGE_TOOL_AWARE if req.github_url else _RETRY_NUDGE_PLAIN
+            tools = [WEB_FETCH_TOOL] if req.github_url else None
+            max_tokens = 8000 if req.github_url else 4096
+            raw = self._call(prompt, max_tokens=max_tokens, tools=tools, budget=budget)
+            data = self._parse_json(raw)
+            try:
+                project_score = float(data["project_score"])
+                if not (0.0 <= project_score <= max_points):
+                    raise ValueError(f"project_score {project_score} out of range 0-{max_points}")
+                return ProjectGradingResult(
+                    project_score=project_score,
+                    weak_areas=list(data["weak_areas"]),
+                    overall_feedback=str(data["overall_feedback"]),
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise LLMValidationError(f"grade_project schema mismatch: {exc}\n\nData: {data}") from exc
 
         if request.github_url:
             return self._retry(

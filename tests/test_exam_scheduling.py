@@ -538,7 +538,16 @@ class TestToolsActuallyPassedOnRealRequest:
 
         adapter = self._adapter(monkeypatch)
         mock_create = MagicMock(return_value=self._mock_response({
-            "assessment_text": "x", "rubric": "y", "duration_minutes": 60,
+            "mcqs": [
+                {"question": f"Q{i}?", "options": ["A", "B", "C", "D"], "correct_option": "A", "explanation": "because"}
+                for i in range(5)
+            ],
+            "project_text": "Build something.",
+            "project_criteria": [
+                {"description": "c1", "points": 20}, {"description": "c2", "points": 20},
+                {"description": "c3", "points": 15}, {"description": "c4", "points": 15},
+            ],
+            "duration_minutes": 60,
         }))
         adapter._client.messages.create = mock_create
 
@@ -554,7 +563,16 @@ class TestToolsActuallyPassedOnRealRequest:
 
         adapter = self._adapter(monkeypatch)
         mock_create = MagicMock(return_value=self._mock_response({
-            "assessment_text": "x", "rubric": "y", "duration_minutes": 60,
+            "mcqs": [
+                {"question": f"Q{i}?", "options": ["A", "B", "C", "D"], "correct_option": "A", "explanation": "because"}
+                for i in range(5)
+            ],
+            "project_text": "Build something.",
+            "project_criteria": [
+                {"description": "c1", "points": 20}, {"description": "c2", "points": 20},
+                {"description": "c3", "points": 15}, {"description": "c4", "points": 15},
+            ],
+            "duration_minutes": 60,
         }))
         adapter._client.messages.create = mock_create
 
@@ -666,7 +684,16 @@ class TestToolsActuallyPassedOnRealRequest:
 
         adapter = self._adapter(monkeypatch)
         mock_create = MagicMock(return_value=self._mock_response({
-            "assessment_text": "x", "rubric": "y", "duration_minutes": 60,
+            "mcqs": [
+                {"question": f"Q{i}?", "options": ["A", "B", "C", "D"], "correct_option": "A", "explanation": "because"}
+                for i in range(5)
+            ],
+            "project_text": "Build something.",
+            "project_criteria": [
+                {"description": "c1", "points": 20}, {"description": "c2", "points": 20},
+                {"description": "c3", "points": 15}, {"description": "c4", "points": 15},
+            ],
+            "duration_minutes": 60,
         }))
         adapter._client.messages.create = mock_create
 

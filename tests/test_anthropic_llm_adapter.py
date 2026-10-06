@@ -53,6 +53,34 @@ _RESPONSE_429 = httpx.Response(429, request=_REQUEST)
 _RESPONSE_500 = httpx.Response(500, request=_REQUEST)
 _RESPONSE_503 = httpx.Response(503, request=_REQUEST)
 
+# A structurally-valid generate_assessment/generate_retest response under
+# the MCQ + Coding Project format (see AssessmentGenerationResult and
+# app.adapters.anthropic_llm._build_mcq_project_fields) — used by every
+# test below that just needs ANY valid response, not a specific one.
+_VALID_MCQ_PROJECT_DICT: dict[str, Any] = {
+    "mcqs": [
+        {
+            "question": f"Why does concept {i} behave this way?",
+            "options": ["Option A", "Option B", "Option C", "Option D"],
+            "correct_option": "A",
+            "explanation": "A is correct because...; B, C, D are wrong because...",
+        }
+        for i in range(5)
+    ],
+    "project_text": "Build a small project demonstrating the concept.",
+    "project_criteria": [
+        {"description": "Criterion one is satisfied.", "points": 20},
+        {"description": "Criterion two is satisfied.", "points": 20},
+        {"description": "Criterion three is satisfied.", "points": 15},
+        {"description": "Criterion four is satisfied.", "points": 15},
+    ],
+    "duration_minutes": 60,
+}
+
+
+def _good_assessment_json() -> str:
+    return json.dumps(_VALID_MCQ_PROJECT_DICT)
+
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -417,11 +445,7 @@ class TestRetryLogic:
         )
 
     def _good_assessment_json(self) -> str:
-        return json.dumps({
-            "assessment_text": "Describe async/await.",
-            "rubric": "Award marks for accuracy.",
-            "duration_minutes": 60,
-        })
+        return _good_assessment_json()
 
     def _bad_json(self) -> str:
         return "not json at all"
@@ -528,9 +552,7 @@ class TestToolPathAttemptCap:
         return "not json at all"
 
     def _good_assessment_json(self) -> str:
-        return json.dumps({
-            "assessment_text": "text", "rubric": "rubric", "duration_minutes": 60,
-        })
+        return _good_assessment_json()
 
     def test_tool_enabled_call_makes_at_most_2_attempts(self, adapter):
         """3 bad responses queued, but a tool-enabled call must stop after
@@ -587,9 +609,7 @@ class TestCircuitBreaker:
         return "not json at all"
 
     def _good_assessment_json(self) -> str:
-        return json.dumps({
-            "assessment_text": "text", "rubric": "rubric", "duration_minutes": 60,
-        })
+        return _good_assessment_json()
 
     def test_second_attempt_skipped_when_first_attempt_exceeds_ceiling(self, adapter, monkeypatch):
         monkeypatch.setenv("LLM_TOOL_CALL_BUDGET_TOKENS", "1000")
@@ -630,7 +650,7 @@ class TestCircuitBreaker:
         mock = _patch_create(adapter2, self._bad_json(), self._good_assessment_json())
         result = adapter2.generate_assessment(req)
 
-        assert result.assessment_text == "text"
+        assert result.part2_text == "Build a small project demonstrating the concept."
         assert mock.call_count == 2
         get_settings.cache_clear()
 
@@ -732,9 +752,7 @@ class TestFilterAppliedInAdapterMethods:
     only label) never enables tools or renders resource_guidance for it."""
 
     def _good_assessment_json(self) -> str:
-        return json.dumps({
-            "assessment_text": "text", "rubric": "rubric", "duration_minutes": 60,
-        })
+        return _good_assessment_json()
 
     def _good_midterm_json(self) -> str:
         return json.dumps({
@@ -842,9 +860,7 @@ class TestToolBudgetExceededErrorType:
         return "not json at all"
 
     def _good_assessment_json(self) -> str:
-        return json.dumps({
-            "assessment_text": "text", "rubric": "rubric", "duration_minutes": 60,
-        })
+        return _good_assessment_json()
 
     def test_tool_enabled_exhaustion_raises_specific_subclass(self, adapter):
         req = AssessmentGenerationRequest(
@@ -940,9 +956,7 @@ class TestCostEstimate:
 
 class TestLogContextTagging:
     def _good_json(self) -> str:
-        return json.dumps({
-            "assessment_text": "text", "rubric": "rubric", "duration_minutes": 60,
-        })
+        return _good_assessment_json()
 
     def test_log_line_includes_the_active_context_label(self, adapter, caplog):
         req = AssessmentGenerationRequest(
@@ -1078,46 +1092,69 @@ class TestGenerateAssessment:
         )
 
     def _good_json(self) -> str:
-        return json.dumps({
-            "assessment_text": "Build a FastAPI CRUD app.",
-            "rubric": "Full marks for correct endpoints.",
-            "duration_minutes": 90,
-        })
+        return _good_assessment_json()
 
     def test_happy_path_returns_correct_result(self, adapter):
         _patch_create(adapter, self._good_json())
         result = adapter.generate_assessment(self._req())
-        assert result.assessment_text == "Build a FastAPI CRUD app."
-        assert result.rubric == "Full marks for correct endpoints."
-        assert result.duration_minutes == 90
+        mcqs = json.loads(result.part1_text)
+        answer_key = json.loads(result.part1_rubric)
+        criteria = json.loads(result.part2_rubric)
+        assert len(mcqs) == 5
+        assert all("question" in q and len(q["options"]) == 4 for q in mcqs)
+        assert len(answer_key) == 5
+        assert all(k["correct_option"] in ("A", "B", "C", "D") for k in answer_key)
+        assert result.part2_text == "Build a small project demonstrating the concept."
+        assert sum(c["points"] for c in criteria) == 70
+        assert result.duration_minutes == 60
+        # Legacy fields are never populated by a real (non-fake) adapter call.
+        assert result.assessment_text is None
+        assert result.rubric is None
 
     def test_uses_max_tokens_16000(self, adapter):
         mock = _patch_create(adapter, self._good_json())
         adapter.generate_assessment(self._req())
         assert mock.call_args[1]["max_tokens"] == 16000
 
-    def test_missing_assessment_text_key_raises_validation_error(self, adapter):
-        bad = json.dumps({"rubric": "some rubric", "duration_minutes": 60})
+    def test_missing_mcqs_key_raises_validation_error(self, adapter):
+        bad = json.dumps({
+            "project_text": "x", "project_criteria": [{"description": "d", "points": 70}],
+            "duration_minutes": 60,
+        })
         _patch_create(adapter, bad, bad, bad)
         with pytest.raises(LLMValidationError, match="schema mismatch"):
             adapter.generate_assessment(self._req())
 
-    def test_missing_rubric_key_raises_validation_error(self, adapter):
-        bad = json.dumps({"assessment_text": "text", "duration_minutes": 60})
+    def test_wrong_mcq_count_raises_validation_error(self, adapter):
+        data = dict(_VALID_MCQ_PROJECT_DICT)
+        data["mcqs"] = data["mcqs"][:4]  # only 4, not 5
+        bad = json.dumps(data)
+        _patch_create(adapter, bad, bad, bad)
+        with pytest.raises(LLMValidationError):
+            adapter.generate_assessment(self._req())
+
+    def test_criteria_not_summing_to_70_raises_validation_error(self, adapter):
+        data = dict(_VALID_MCQ_PROJECT_DICT)
+        data["project_criteria"] = [{"description": "d", "points": 50}]  # sums to 50, not 70
+        bad = json.dumps(data)
         _patch_create(adapter, bad, bad, bad)
         with pytest.raises(LLMValidationError):
             adapter.generate_assessment(self._req())
 
     def test_duration_minutes_as_float_string_raises_validation_error(self, adapter):
         # int("90.0") raises ValueError — must be a clean int
-        bad = json.dumps({"assessment_text": "text", "rubric": "rubric", "duration_minutes": "90.0"})
+        data = dict(_VALID_MCQ_PROJECT_DICT)
+        data["duration_minutes"] = "90.0"
+        bad = json.dumps(data)
         _patch_create(adapter, bad, bad, bad)
         with pytest.raises(LLMValidationError):
             adapter.generate_assessment(self._req())
 
     def test_duration_minutes_as_integer_string_is_accepted(self, adapter):
         # int("90") works fine — string digit representations are acceptable
-        ok = json.dumps({"assessment_text": "text", "rubric": "rubric", "duration_minutes": "90"})
+        data = dict(_VALID_MCQ_PROJECT_DICT)
+        data["duration_minutes"] = "90"
+        ok = json.dumps(data)
         _patch_create(adapter, ok)
         result = adapter.generate_assessment(self._req())
         assert result.duration_minutes == 90
@@ -1126,7 +1163,7 @@ class TestGenerateAssessment:
         bad = json.dumps({"wrong_key": "value"})
         mock = _patch_create(adapter, bad, self._good_json())
         result = adapter.generate_assessment(self._req())
-        assert result.duration_minutes == 90
+        assert result.duration_minutes == 60
         assert mock.call_count == 2
 
 
@@ -1151,17 +1188,14 @@ class TestGenerateRetest:
         )
 
     def _good_json(self) -> str:
-        return json.dumps({
-            "assessment_text": "Retest on event loop and coroutines.",
-            "rubric": "Focus on weak areas.",
-            "duration_minutes": 45,
-        })
+        return _good_assessment_json()
 
     def test_happy_path_returns_correct_result(self, adapter):
         _patch_create(adapter, self._good_json())
         result = adapter.generate_retest(self._req())
-        assert result.assessment_text == "Retest on event loop and coroutines."
-        assert result.duration_minutes == 45
+        assert json.loads(result.part1_text)  # 5 MCQs, parseable
+        assert result.part2_text == "Build a small project demonstrating the concept."
+        assert result.duration_minutes == 60
 
     def test_weak_areas_joined_in_prompt(self, adapter):
         mock = _patch_create(adapter, self._good_json())
@@ -1181,8 +1215,11 @@ class TestGenerateRetest:
         prompt = mock.call_args[1]["messages"][0]["content"]
         assert "2" in prompt
 
-    def test_missing_assessment_text_exhausts_retries(self, adapter):
-        bad = json.dumps({"rubric": "rubric", "duration_minutes": 45})
+    def test_missing_mcqs_key_exhausts_retries(self, adapter):
+        bad = json.dumps({
+            "project_text": "x", "project_criteria": [{"description": "d", "points": 70}],
+            "duration_minutes": 45,
+        })
         _patch_create(adapter, bad, bad, bad)
         with pytest.raises(LLMValidationError):
             adapter.generate_retest(self._req())

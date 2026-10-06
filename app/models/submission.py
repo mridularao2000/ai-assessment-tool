@@ -46,6 +46,14 @@ class Submission(Base):
     # answer, submitted alongside the Part 2 project fields above in the
     # same request. Null for standalone and Assessment-type entries.
     part1_text_content: Mapped[Optional[str]] = mapped_column(Text, default=None)
+    # New MCQ + Coding Project format only (see AssessmentGenerationResult) —
+    # the 5 MCQ answers (option letters, in question order), submitted
+    # alongside the Part 2 project fields above in the same request. Null
+    # for a Midterm and for any assessment still in the legacy free-form
+    # format. Mutually exclusive with part1_text_content — an assessment
+    # is either a Midterm (free-text Part 1) or MCQ-format (this field),
+    # never both. Validated to have exactly 5 entries by SubmissionService.
+    mcq_answers: Mapped[Optional[list]] = mapped_column(JSON, default=None)
     submitted_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=utcnow
     )

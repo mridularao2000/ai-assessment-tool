@@ -149,6 +149,75 @@ class RetestGenerationRequest:
 
 
 @dataclass
+class MCQGradingRequest:
+    """Input to grade_mcq_section — Part 1 of a new-format (MCQ + Coding
+    Project) assessment (see AssessmentGenerationResult). Scoring itself is
+    NOT this call's job and must stay deterministic Python in
+    GradingService — matching each submitted answer against answer_key's
+    correct_option is cheap, exact, and must never be delegated to the
+    LLM. This call's only job is: (1) normalize each submitted answer to
+    a canonical option letter (A-D) — handles a student answering with
+    free text like "the second one" instead of a clean letter — and (2)
+    produce one human-readable feedback line per question (using
+    answer_key's stored explanation). One call for all 5 questions, not
+    five separate calls.
+
+    questions and answer_key are the exact JSON structures stored on
+    Assessment.part1_text / Assessment.part1_rubric, decoded by the
+    caller — see AssessmentGenerationResult's docstring for their shape.
+    """
+
+    questions: list[dict]       # [{"question": str, "options": list[str]}] x5
+    answer_key: list[dict]      # [{"correct_option": str, "explanation": str}] x5
+    submitted_answers: list[str]  # the student's 5 raw answers, in question order
+    prompt_template_body: str
+
+
+@dataclass
+class MCQGradingResult:
+    """parsed_answers normalizes each submitted answer to a canonical
+    option letter (A-D), in question order — GradingService compares
+    these against MCQGradingRequest.answer_key to compute the score; this
+    result never states correctness itself. feedback is one line per
+    question (any question, not just wrong ones), in the same order."""
+
+    parsed_answers: list[str]  # length 5, each one of "A"/"B"/"C"/"D"
+    feedback: list[str]        # length 5
+
+
+@dataclass
+class ProjectGradingRequest:
+    """Input to grade_project — Part 2 of a new-format (MCQ + Coding
+    Project) assessment: the coding project, scored independently of the
+    MCQ section against project_criteria (decoded from
+    Assessment.part2_rubric — see AssessmentGenerationResult's docstring).
+    Mirrors GradingRequest's content-resolution/github_url-gating
+    contract exactly; only the rubric shape and point ceiling differ
+    (criteria-based, summing to 70, vs. GradingRequest's free-form prose
+    rubric scored as a 0-100 mastery_score)."""
+
+    project_text: str
+    project_criteria: list[dict]  # [{"description": str, "points": float}] x4-6, summing to 70
+    curriculum_content: str
+    submission_content: str
+    prompt_template_body: str
+    github_url: Optional[str] = None
+
+
+@dataclass
+class ProjectGradingResult:
+    """project_score is a raw point total (0.0 to the sum of the given
+    project_criteria's points — 70 under the current rubric structure),
+    NOT a 0-100 mastery_score — GradingService combines it directly with
+    the MCQ section's score (both already in the same point space) rather
+    than renormalizing either one."""
+
+    project_score: float
+    weak_areas: list[str]
+    overall_feedback: str
+
+
+@dataclass
 class GradingRequest:
     """Input to grade_submission.
 
@@ -315,15 +384,39 @@ class AssessmentGenerationResult:
     The same structure is returned for initial and retest assessments.
     duration_minutes is determined by the LLM from curriculum complexity.
 
-    Examples:
-      JavaScript Concepts        → 60 min
-      React Components           → 90 min
-      VS Code Extension Arch     → 120 min
+    Two generations formats, never mixed within one instance:
+
+      LEGACY (assessment_text + rubric, free-form prose) — still produced
+      by FakeLLM in the existing test suite and used by any Assessment row
+      already generated before the MCQ + Coding Project format shipped.
+      Kept as the first two fields, both now optional, purely so every
+      pre-existing call site/test that constructs this dataclass with only
+      these two keeps working unchanged.
+
+      MCQ + CODING PROJECT (current format — see the
+      assessment_generation/retest_generation prompt templates in
+      app/db/seed.py): part1_text/part1_rubric are the 5 MCQs —
+      part1_text is a JSON list of {"question", "options"} (student-
+      facing, no answers); part1_rubric is a JSON list of
+      {"correct_option", "explanation"} in the same order (hidden answer
+      key, never shown to the student). part2_text/part2_rubric are the
+      coding project — part2_text is the student-facing prompt (+ starter
+      scaffold inline where given); part2_rubric is a JSON list of
+      {"description", "points"} criteria (hidden, summing to 70). This is
+      what every real (non-fake) AnthropicLLMAdapter call now produces —
+      mirrors MidtermGenerationResult's shape exactly.
+
+    AssessmentService checks which pair is populated (part1_text is not
+    None => new format) to decide which Assessment columns to write.
     """
 
-    assessment_text: str
-    rubric: str
-    duration_minutes: int
+    assessment_text: Optional[str] = None
+    rubric: Optional[str] = None
+    part1_text: Optional[str] = None
+    part1_rubric: Optional[str] = None
+    part2_text: Optional[str] = None
+    part2_rubric: Optional[str] = None
+    duration_minutes: int = 0
 
 
 @dataclass
@@ -442,6 +535,14 @@ class LLMInterface(Protocol):
     def grade_submission(
         self, request: GradingRequest
     ) -> GradingResult: ...
+
+    def grade_mcq_section(
+        self, request: MCQGradingRequest
+    ) -> MCQGradingResult: ...
+
+    def grade_project(
+        self, request: ProjectGradingRequest
+    ) -> ProjectGradingResult: ...
 
     def fetch_github_content(
         self, request: GithubFetchRequest

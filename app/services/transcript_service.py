@@ -132,6 +132,16 @@ class TranscriptEntryRow:
     status_label: str      # compact form, e.g. "GRADED", "GRADED (LATE)", "MISSED–LATE (2)"
     points: Optional[float]  # None -> rendered as "—"
     retake_note: Optional[str] = None  # e.g. "retake, was 38.00"
+    # MCQ/project split display — populated only when the graded
+    # submission's mcq_answers is set (the new MCQ + Coding Project
+    # format; see AssessmentGenerationResult), e.g. "MCQ 24/30 · Project
+    # 58/70". None (and the transcript falls back to the single `points`
+    # value) for a legacy-format assessment or a Midterm, per the
+    # explicit instruction not to retroactively reformat entries that
+    # were never split this way. This is a DISPLAY decomposition of
+    # `points` only — GPA (compute_gpa) is computed from score_earned
+    # exactly as before, untouched by this field.
+    score_breakdown: Optional[str] = None
     was_late: bool = False  # graded from a submission made after due_date —
     # the transcript must show this distinctly, not render identically to
     # an on-time grade (a missed-then-late-graded entry is real history,
@@ -176,9 +186,13 @@ def _row_for(db: Session, curriculum: Curriculum) -> Optional[TranscriptEntryRow
 
     points: Optional[float] = None
     retake_note: Optional[str] = None
+    score_breakdown: Optional[str] = None
     was_late = False
     if status == GRADED and final.submission is not None and final.submission.grade is not None:
         points = final.submission.grade.score_earned
+        if final.submission.mcq_answers is not None:
+            grade = final.submission.grade
+            score_breakdown = f"MCQ {grade.part1_score:.0f}/30 · Project {grade.part2_score:.1f}/70"
         # Derived from submitted_at vs. due_date, not a spent token — a
         # midterm's late-submission recovery is never token-gated (see
         # CurriculumUploadService.check_and_clear_hold /
@@ -217,6 +231,7 @@ def _row_for(db: Session, curriculum: Curriculum) -> Optional[TranscriptEntryRow
         status_label=status_label,
         points=points,
         retake_note=retake_note,
+        score_breakdown=score_breakdown,
         was_late=was_late,
     )
 

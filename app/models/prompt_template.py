@@ -8,10 +8,12 @@ from app.database import Base
 from app.models._utils import utcnow
 
 # Valid slug values — enforced at the service layer, not at the DB level.
-#   assessment_generation   — first-attempt assessment creation
+#   assessment_generation   — first-attempt assessment creation (MCQ + Coding Project format, v2.0+)
 #   retest_generation       — subsequent-attempt assessment creation (receives weak_areas)
 #   midterm_generation      — two-part Midterm exam creation (curriculum-upload only)
-#   grading                 — submission grading
+#   grading                 — submission grading (legacy free-form format only)
+#   mcq_grading             — Section 1 (5 MCQs) grading for the MCQ + Coding Project format
+#   project_grading         — Section 2 (coding project) grading for the MCQ + Coding Project format
 #   reschedule_classification — excuse classification (Claude outputs category only)
 VALID_SLUGS = frozenset(
     {
@@ -19,6 +21,8 @@ VALID_SLUGS = frozenset(
         "retest_generation",
         "midterm_generation",
         "grading",
+        "mcq_grading",
+        "project_grading",
         "reschedule_classification",
         "curriculum_analysis",   # optional enrichment in CurriculumService.create()
     }

@@ -568,6 +568,8 @@ def seed_prompt_templates(db: Session) -> None:
         "midterm_retest_generation",
         "grading",
         "midterm_grading",
+        "mcq_grading",
+        "project_grading",
         "reschedule_classification",
     ):
         db.add(
@@ -655,6 +657,7 @@ def make_submission(
     *,
     text_content: str = "Async/await enables concurrent I/O without OS threads.",
     part1_text_content: str | None = None,
+    mcq_answers: list | None = None,
 ) -> Submission:
     """Create a text submission and mark the assessment as submitted."""
     submission = Submission(
@@ -663,6 +666,7 @@ def make_submission(
         submission_type=SubmissionType.text,
         text_content=text_content,
         part1_text_content=part1_text_content,
+        mcq_answers=mcq_answers,
     )
     assessment.status = AssessmentStatus.submitted
     db.add(submission)

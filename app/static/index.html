@@ -266,6 +266,14 @@
                             placeholder="Answer Part 1's assignment questions here…"></textarea>
                 </div>
 
+                <div id="s_mcq_section" class="sub-section mb-3 d-none">
+                  <label class="form-label mb-2">
+                    Section 1 — Multiple Choice
+                    <span class="text-muted fw-normal">(questions and options are in the exam email — select by letter)</span>
+                  </label>
+                  <div id="s_mcq_questions"><!-- 5 radio-groups rendered by renderMcqSection() --></div>
+                </div>
+
                 <div class="text-muted small mb-2">
                   <div><strong>Coding questions:</strong> use GitHub repo URL + paste your explanation and specific file paths in the text field (both can be submitted together).</div>
                   <div><strong>Written questions:</strong> use Text.</div>
@@ -683,8 +691,62 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (ok && data.is_midterm) {
       document.getElementById('s_part1_section').classList.remove('d-none');
       document.getElementById('s_type_label').textContent = 'Part 2 — Project Submission Type';
+    } else if (ok && data.is_mcq_format) {
+      renderMcqSection(data.mcqs || []);
+      document.getElementById('s_mcq_section').classList.remove('d-none');
+      document.getElementById('s_type_label').textContent = 'Section 2 — Coding Project Submission Type';
     }
   }
+});
+
+// ── MCQ section (new MCQ + Coding Project assessment format) ────────────────
+// Questions/options aren't repeated here — the student already has them
+// from the exam email; this only needs to collect 5 option-letter choices.
+function renderMcqSection(mcqs) {
+  const container = document.getElementById('s_mcq_questions');
+  container.innerHTML = mcqs.map((_, i) => {
+    const n = i + 1;
+    const options = ['A', 'B', 'C', 'D'].map(letter => `
+      <div class="form-check form-check-inline">
+        <input class="form-check-input mcq-answer-input" type="radio" name="mcq_q${n}"
+               id="mcq_q${n}_${letter}" value="${letter}" onchange="updateSubmitEnabled()">
+        <label class="form-check-label" for="mcq_q${n}_${letter}">${letter}</label>
+      </div>`).join('');
+    return `<div class="mb-2"><span class="fw-semibold me-2">Q${n}</span>${options}</div>`;
+  }).join('');
+}
+
+function collectMcqAnswers() {
+  const answers = [];
+  for (let n = 1; n <= 5; n++) {
+    const checked = document.querySelector(`input[name="mcq_q${n}"]:checked`);
+    answers.push(checked ? checked.value : null);
+  }
+  return answers;
+}
+
+function updateSubmitEnabled() {
+  const btn = document.getElementById('submissionBtn');
+  const mcqVisible = !document.getElementById('s_mcq_section').classList.contains('d-none');
+  if (!mcqVisible) {
+    btn.disabled = false;
+    return;
+  }
+  const allMcqAnswered = collectMcqAnswers().every(a => a !== null);
+
+  const type = document.getElementById('s_type').value;
+  let projectFilled = false;
+  if (type === 'text') projectFilled = !!document.getElementById('s_text').value.trim();
+  else if (type === 'github_url') projectFilled = !!document.getElementById('s_github').value.trim();
+  else if (type === 'file') projectFilled = document.getElementById('s_file').files.length > 0;
+
+  btn.disabled = !(allMcqAnswered && projectFilled);
+}
+
+['s_type', 's_text', 's_github', 's_file'].forEach(id => {
+  const el = document.getElementById(id);
+  el.addEventListener('input', updateSubmitEnabled);
+  el.addEventListener('change', updateSubmitEnabled);
 });
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -859,6 +921,13 @@ document.getElementById('submissionForm').addEventListener('submit', async (e) =
     return;
   }
 
+  const isMcqFormat = !document.getElementById('s_mcq_section').classList.contains('d-none');
+  const mcqAnswers = isMcqFormat ? collectMcqAnswers() : null;
+  if (isMcqFormat && mcqAnswers.some(a => a === null)) {
+    showResult('submissionResult', 'Please answer all 5 multiple-choice questions.', true);
+    return;
+  }
+
   setLoading(btn, true);
   showProgress('submissionResult', ['Submitting your answer'], 0);
 
@@ -868,6 +937,9 @@ document.getElementById('submissionForm').addEventListener('submit', async (e) =
   fd.append('submission_type', type);
   if (isMidterm) {
     fd.append('part1_text_content', part1Text);
+  }
+  if (isMcqFormat) {
+    fd.append('mcq_answers', JSON.stringify(mcqAnswers));
   }
 
   if (type === 'text') {

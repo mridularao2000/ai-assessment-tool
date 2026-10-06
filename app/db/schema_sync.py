@@ -45,6 +45,7 @@ PENDING_COLUMNS: dict[str, list[str]] = {
     ],
     "submissions": [
         "ALTER TABLE submissions ADD COLUMN part1_text_content TEXT",
+        "ALTER TABLE submissions ADD COLUMN mcq_answers TEXT",
     ],
     "late_submission_tokens": [
         "ALTER TABLE late_submission_tokens ADD COLUMN curriculum_upload_id VARCHAR(36)",

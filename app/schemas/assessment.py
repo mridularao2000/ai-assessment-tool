@@ -50,3 +50,11 @@ class AssessmentDetailResponse(BaseModel):
     # show the separate Part 1 (assignment) answer field alongside the
     # normal Part 2 (project) submission fields.
     is_midterm: bool = False
+    # True for an assessment generated under the new MCQ + Coding Project
+    # format (see AssessmentGenerationResult) — tells the frontend to show
+    # 5 MCQ answer selectors alongside the normal project submission
+    # fields. Mutually exclusive with is_midterm.
+    is_mcq_format: bool = False
+    # The 5 MCQ questions/options (never the correct answers), decoded
+    # from Assessment.part1_text — present only when is_mcq_format is True.
+    mcqs: Optional[list[dict]] = None

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.exceptions import InvalidStateError, InvalidTokenError, NotFoundError
 from app.interfaces.llm import (
     AssessmentGenerationRequest,
+    AssessmentGenerationResult,
     LLMInterface,
     MidtermGenerationRequest,
     MidtermRetestGenerationRequest,
@@ -48,6 +49,42 @@ def build_assessment_dates(scheduled_at: datetime) -> tuple[datetime, datetime]:
     reminder_at = scheduled_at - timedelta(days=1)   # 1 day before
     due_date = scheduled_at + timedelta(days=2)      # 2-day submission window
     return reminder_at, due_date
+
+
+def _generation_result_fields(result: AssessmentGenerationResult) -> dict[str, Optional[str]]:
+    """Map an AssessmentGenerationResult onto Assessment's content columns.
+
+    result.part1_text is not None => the current MCQ + Coding Project
+    format (every real, non-fake LLM call now produces this — see
+    AssessmentGenerationResult's docstring): write part1_text/part1_rubric/
+    part2_text/part2_rubric, leave assessment_text/rubric untouched (None).
+
+    Otherwise => the legacy free-form format, still produced by the test
+    suite's FakeLLM and any already-generated row predating this format:
+    write assessment_text/rubric, leave part1_text/part2_text untouched.
+
+    Shared by create_for_curriculum, create_retest, and
+    generate_assessment_content — the three places that turn a
+    generate_assessment/generate_retest result into Assessment columns —
+    so the branch is written once.
+    """
+    if result.part1_text is not None:
+        return {
+            "assessment_text": None,
+            "rubric": None,
+            "part1_text": result.part1_text,
+            "part1_rubric": result.part1_rubric,
+            "part2_text": result.part2_text,
+            "part2_rubric": result.part2_rubric,
+        }
+    return {
+        "assessment_text": result.assessment_text,
+        "rubric": result.rubric,
+        "part1_text": None,
+        "part1_rubric": None,
+        "part2_text": None,
+        "part2_rubric": None,
+    }
 
 
 class AssessmentService:
@@ -142,8 +179,7 @@ class AssessmentService:
             id=assessment_id,
             curriculum_id=curriculum.id,
             attempt_number=1,
-            assessment_text=result.assessment_text,
-            rubric=result.rubric,
+            **_generation_result_fields(result),
             duration_minutes=result.duration_minutes,
             generation_prompt_id=prompt_template.id,
             scheduled_at=scheduled_at,
@@ -248,8 +284,7 @@ class AssessmentService:
                 id=assessment_id,
                 curriculum_id=curriculum_id,
                 attempt_number=previous_attempt + 1,
-                assessment_text=result.assessment_text,
-                rubric=result.rubric,
+                **_generation_result_fields(result),
                 duration_minutes=result.duration_minutes,
                 generation_prompt_id=prompt_template.id,
                 scheduled_at=scheduled_at,
@@ -395,8 +430,8 @@ class AssessmentService:
                     resources=resources,
                 )
             )
-        assessment.assessment_text = result.assessment_text
-        assessment.rubric = result.rubric
+        for field, value in _generation_result_fields(result).items():
+            setattr(assessment, field, value)
         assessment.duration_minutes = result.duration_minutes
         assessment.generation_prompt_id = prompt_template.id
         self.db.flush()

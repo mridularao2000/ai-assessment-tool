@@ -130,6 +130,7 @@ class TestSyncSchema:
             "grades.score_earned",
             "grades.max_marks",
             "submissions.part1_text_content",
+            "submissions.mcq_answers",
             "late_submission_tokens.curriculum_upload_id",
             "curriculum_uploads.closed_at",
             "curriculum_uploads.last_secondary_transcript_sent_at",
