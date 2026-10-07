@@ -22,6 +22,7 @@ from datetime import datetime, timedelta
 
 from app.jobs.recheck_stuck_assessments_job import recheck_stuck_assessments_job
 from app.models.assessment import Assessment, AssessmentStatus
+from app.models.curriculum_upload import CurriculumUpload
 from app.utils.token_auth import generate_submission_token
 from tests.conftest import FakeLLM, TestSessionLocal, make_curriculum, seed_prompt_templates
 
@@ -138,6 +139,55 @@ class TestRecheckStuckAssessments:
 
         monkeypatch.setattr("app.jobs.send_assessment_job._llm", FakeLLM())  # "fixed"
         recheck_stuck_assessments_job()  # next tick: recovers with no manual step
+
+        db.expire_all()
+        assert db.get(Assessment, assessment.id).status == AssessmentStatus.active
+
+    def test_skips_a_stuck_assessment_belonging_to_a_closed_upload(self, db, monkeypatch):
+        """Regression test for a 2026-10-07 production incident:
+        CurriculumUploadService.close_upload() cancels the three
+        APScheduler jobs for every entry but never touches
+        Assessment.status, so a row already past its scheduled_at at
+        close time is left at status=scheduled forever — indistinguishable
+        from a genuinely stuck row to this sweep's query. Before the fix,
+        it would "recover" it: a real (unwanted) LLM generation call, and
+        likely an exam email, for a curriculum the user had already
+        archived."""
+        seed_prompt_templates(db)
+        _patch_job_infra(monkeypatch)
+        upload = CurriculumUpload(
+            id=str(uuid.uuid4()), source_filename="archived.json", closed_at=datetime.utcnow(),
+        )
+        db.add(upload)
+        db.commit()
+        curriculum = make_curriculum(db, entry_type="assessment")
+        curriculum.upload_id = upload.id
+        db.commit()
+        well_overdue = datetime.utcnow() - timedelta(hours=2)
+        assessment = _make_scheduled_assessment(db, curriculum, scheduled_at=well_overdue)
+
+        recheck_stuck_assessments_job()
+
+        db.expire_all()
+        refreshed = db.get(Assessment, assessment.id)
+        assert refreshed.status == AssessmentStatus.scheduled
+        assert refreshed.assessment_text is None
+
+    def test_still_sweeps_a_stuck_assessment_from_a_non_closed_upload(self, db, monkeypatch):
+        """Sanity check the fix isn't over-triggering: an entry's upload
+        existing (and not closed) must not itself exclude it."""
+        seed_prompt_templates(db)
+        _patch_job_infra(monkeypatch)
+        upload = CurriculumUpload(id=str(uuid.uuid4()), source_filename="open.json", closed_at=None)
+        db.add(upload)
+        db.commit()
+        curriculum = make_curriculum(db, entry_type="assessment")
+        curriculum.upload_id = upload.id
+        db.commit()
+        well_overdue = datetime.utcnow() - timedelta(hours=2)
+        assessment = _make_scheduled_assessment(db, curriculum, scheduled_at=well_overdue)
+
+        recheck_stuck_assessments_job()
 
         db.expire_all()
         assert db.get(Assessment, assessment.id).status == AssessmentStatus.active

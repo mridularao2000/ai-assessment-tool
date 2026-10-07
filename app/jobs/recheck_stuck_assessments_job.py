@@ -4,6 +4,8 @@ from datetime import datetime, timedelta
 from app.config import get_settings
 from app.database import SessionLocal
 from app.models.assessment import Assessment, AssessmentStatus
+from app.models.curriculum import Curriculum
+from app.models.curriculum_upload import CurriculumUpload
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +54,21 @@ def recheck_stuck_assessments_job() -> None:
     minutes forever is bounded, not runaway — and a stuck row always
     self-heals the moment its cause is fixed, with no silent permanent
     give-up and no manual step required.
+
+    Excludes any assessment whose curriculum belongs to a CLOSED upload
+    (CurriculumUpload.closed_at is not None) — a real production incident
+    (2026-10-07): CurriculumUploadService.close_upload() cancels the three
+    APScheduler jobs for every entry but deliberately never touches
+    Assessment.status (closing is a jobstore-level action, not a DB-state
+    rewrite — see its docstring). A row already past its scheduled_at at
+    close time is therefore left sitting at status=scheduled forever,
+    indistinguishable from a genuinely stuck row to this sweep's query —
+    which then "recovered" it, paying for a real (unwanted) LLM generation
+    and likely sending its exam email, for a curriculum the user had
+    already archived. The outer join to CurriculumUpload naturally covers
+    standalone assessments too (upload_id is None -> no matching row ->
+    closed_at reads NULL -> IS NULL -> still eligible), so this changes
+    nothing for the standalone/non-upload case.
     """
     logger.info("Starting job: recheck_stuck_assessments")
     db = SessionLocal()
@@ -62,9 +79,12 @@ def recheck_stuck_assessments_job() -> None:
         retry_ids = [
             row[0]
             for row in db.query(Assessment.id)
+            .join(Curriculum, Assessment.curriculum_id == Curriculum.id)
+            .outerjoin(CurriculumUpload, Curriculum.upload_id == CurriculumUpload.id)
             .filter(
                 Assessment.status == AssessmentStatus.scheduled,
                 Assessment.scheduled_at < grace_cutoff,
+                CurriculumUpload.closed_at.is_(None),
             )
             .all()
         ]
