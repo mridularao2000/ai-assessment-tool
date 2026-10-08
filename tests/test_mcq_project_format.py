@@ -17,8 +17,15 @@ import pytest
 from app.models.assessment import AssessmentStatus
 from app.models.curriculum import CurriculumEntryType
 from app.schemas.grade import GradeResponse
+from app.services.email_service import EmailService
 from app.services.grading_service import GradingService
-from tests.conftest import make_assessment, make_curriculum, make_submission, seed_prompt_templates
+from tests.conftest import (
+    RecordingEmailAdapter,
+    make_assessment,
+    make_curriculum,
+    make_submission,
+    seed_prompt_templates,
+)
 
 
 # A 5-question MCQ section, matching the shape _build_mcq_project_fields
@@ -94,6 +101,33 @@ def _make_mcq_assessment(db, *, entry_type=None, max_marks=None):
         part2_rubric=json.dumps(_CRITERIA),
     )
     return curriculum, assessment
+
+
+class TestMcqProjectExamEmail:
+    """Regression test for a production bug found 2026-10-08: the exam
+    delivery email was never updated for this format. EmailService built
+    AssessmentEmailData.assessment_text from Assessment.assessment_text,
+    which _generation_result_fields() always leaves None for this format
+    (content lives in part1_text/part2_text instead) — so the email's
+    Section 1 rendered the literal string "None" and the project brief
+    (part2_text) was dropped outright, since part2_text was only ever
+    forwarded for is_midterm. Students received an email with no visible
+    questions at all."""
+
+    def test_exam_email_carries_the_mcqs_and_project_brief(self, db):
+        seed_prompt_templates(db)
+        _, assessment = _make_mcq_assessment(db)
+        email = RecordingEmailAdapter()
+
+        EmailService(db, email).send_assessment_email(assessment.id)
+
+        assert len(email.assessment_calls) == 1
+        data = email.assessment_calls[0]
+        assert data.mcqs == _QUESTIONS
+        assert data.part2_text == "Build the thing."
+        # assessment_text is unused once mcqs is set — must not leak the
+        # stale default/None value into the rendered email.
+        assert data.assessment_text == ""
 
 
 class TestMcqProjectGradingDispatch:

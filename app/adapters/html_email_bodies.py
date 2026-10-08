@@ -48,13 +48,28 @@ class HtmlEmailBodyMixin:
 
     def send_assessment_email(self, data: AssessmentEmailData) -> None:
         duration = f"{data.duration_minutes} minutes" if data.duration_minutes else "unspecified"
-        part1_heading = "Part 1 — Assignment" if data.part2_text else "Assessment"
+        is_mcq = data.mcqs is not None
+
+        if is_mcq:
+            part1_heading = "Section 1 — Multiple Choice Questions"
+            part1_body = "".join(f"""
+    <div style="margin:0 0 14px">
+      <p style="font-weight:600;margin:0 0 6px">Q{i + 1}. {_e(q["question"])}</p>
+      <ul style="margin:0;padding-left:20px;line-height:1.6">
+        {"".join(f"<li><strong>{letter}.</strong> {_e(opt)}</li>" for letter, opt in zip("ABCD", q["options"]))}
+      </ul>
+    </div>""" for i, q in enumerate(data.mcqs))
+        else:
+            part1_heading = "Part 1 — Assignment" if data.part2_text else "Assessment"
+            part1_body = f'<div style="white-space:pre-wrap;line-height:1.6">{_e(data.assessment_text)}</div>'
+
         part2_section = ""
         if data.part2_text:
+            part2_heading = "Section 2 — Coding Project" if is_mcq else "Part 2 — Project Submission"
             part2_section = f"""
   <div style="background:#f1f3f5;border-left:4px solid #6610f2;padding:16px 20px;
               border-radius:4px;margin:20px 0">
-    <h3 style="margin-top:0;color:#6610f2">Part 2 — Project Submission</h3>
+    <h3 style="margin-top:0;color:#6610f2">{_e(part2_heading)}</h3>
     <div style="white-space:pre-wrap;line-height:1.6">{_e(data.part2_text)}</div>
   </div>"""
         body = f"""
@@ -80,7 +95,7 @@ class HtmlEmailBodyMixin:
   <div style="background:#f1f3f5;border-left:4px solid #0d6efd;padding:16px 20px;
               border-radius:4px;margin:20px 0">
     <h3 style="margin-top:0;color:#0d6efd">{_e(part1_heading)}</h3>
-    <div style="white-space:pre-wrap;line-height:1.6">{_e(data.assessment_text)}</div>
+    {part1_body}
   </div>
   {part2_section}
 

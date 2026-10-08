@@ -38,6 +38,12 @@ class AssessmentEmailData:
     # in the same email rather than a separate method, since the
     # difference is purely presentational (one exam, two parts).
     part2_text: Optional[str] = None
+    # Set only for the MCQ + Coding Project format (non-midterm entries
+    # whose Assessment.part1_text holds the generated MCQ JSON rather than
+    # free-text). Parsed list of {"question": str, "options": list[str]} —
+    # never the answer key, which stays server-side in part1_rubric. When
+    # set, assessment_text is unused and part1 renders as this instead.
+    mcqs: Optional[list[dict]] = None
 
 
 @dataclass

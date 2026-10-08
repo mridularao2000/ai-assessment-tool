@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Optional
 
 from sqlalchemy.orm import Session, joinedload
@@ -48,16 +49,30 @@ class EmailService:
         settings = get_settings()
         is_entry = assessment.curriculum.entry_type is not None
         is_midterm = assessment.curriculum.entry_type == CurriculumEntryType.midterm
+        is_mcq_format = not is_midterm and assessment.part1_text is not None
         recipients = (
             [settings.exam_recipient_email or settings.user_email]
             if is_entry else [settings.user_email]
         )
+        if is_mcq_format:
+            assessment_text = ""
+            part2_text = assessment.part2_text
+            mcqs = json.loads(assessment.part1_text)
+        elif is_midterm:
+            assessment_text = assessment.part1_text or ""
+            part2_text = assessment.part2_text
+            mcqs = None
+        else:
+            assessment_text = assessment.assessment_text or ""
+            part2_text = None
+            mcqs = None
         self.email.send_assessment_email(AssessmentEmailData(
             recipient_emails=recipients,
             assessment_id=assessment_id,
             topic=assessment.curriculum.topic,
-            assessment_text=(assessment.part1_text if is_midterm else assessment.assessment_text) or "",
-            part2_text=assessment.part2_text if is_midterm else None,
+            assessment_text=assessment_text,
+            part2_text=part2_text,
+            mcqs=mcqs,
             duration_minutes=assessment.duration_minutes,
             scheduled_at=assessment.scheduled_at,
             due_date=assessment.due_date,
