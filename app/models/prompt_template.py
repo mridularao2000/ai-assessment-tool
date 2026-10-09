@@ -11,7 +11,13 @@ from app.models._utils import utcnow
 #   assessment_generation   — first-attempt assessment creation (MCQ + Coding Project format, v2.0+)
 #   retest_generation       — subsequent-attempt assessment creation (receives weak_areas)
 #   midterm_generation      — two-part Midterm exam creation (curriculum-upload only)
+#   midterm_generation_defense_only — Part-2-only variant for a running-project
+#                             checkpoint (MidtermDetail.defense_only)
+#   midterm_retest_generation — Midterm retake creation
+#   midterm_retest_generation_defense_only — Part-2-only retake variant
 #   grading                 — submission grading (legacy free-form format only)
+#   midterm_grading         — two-part Midterm submission grading
+#   midterm_grading_defense_only — Part-2-only Midterm grading variant
 #   mcq_grading             — Section 1 (5 MCQs) grading for the MCQ + Coding Project format
 #   project_grading         — Section 2 (coding project) grading for the MCQ + Coding Project format
 #   reschedule_classification — excuse classification (Claude outputs category only)
@@ -20,7 +26,12 @@ VALID_SLUGS = frozenset(
         "assessment_generation",
         "retest_generation",
         "midterm_generation",
+        "midterm_generation_defense_only",
+        "midterm_retest_generation",
+        "midterm_retest_generation_defense_only",
         "grading",
+        "midterm_grading",
+        "midterm_grading_defense_only",
         "mcq_grading",
         "project_grading",
         "reschedule_classification",

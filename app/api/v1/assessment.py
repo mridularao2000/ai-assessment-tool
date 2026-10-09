@@ -153,31 +153,38 @@ def get_assessment(
     # Scoped strictly to status == expired: a normally-scheduled entry
     # (status == scheduled) must wait for send_assessment_job, not be
     # peekable early through this endpoint.
-    if (
-        assessment.status == AssessmentStatus.expired
-        and assessment.assessment_text is None
-        and assessment.part1_text is None
-    ):
+    if assessment.status == AssessmentStatus.expired and not assessment.content_generated:
         if is_midterm:
             assessment_svc.generate_midterm_content(assessment)
         else:
             assessment_svc.generate_assessment_content(assessment)
         assessment_svc.db.commit()
 
+    is_defense_only = is_midterm and assessment.curriculum.midterm_detail.defense_only
     is_mcq_format = not is_midterm and assessment.part1_text is not None
+
+    # A defense_only Midterm (see MidtermDetail.defense_only) has no Part 1
+    # at all — assessment.part1_text is always None for it — so showing
+    # "part1_text if is_midterm" here would show nothing. Its whole exam
+    # IS Part 2 (the project defense), so that's what's shown instead,
+    # same as the MCQ format's project brief.
+    if is_midterm and not is_defense_only:
+        assessment_text = assessment.part1_text
+    elif is_mcq_format or is_defense_only:
+        assessment_text = assessment.part2_text
+    else:
+        assessment_text = assessment.assessment_text
 
     return AssessmentDetailResponse(
         assessment_id=assessment.id,
         topic=assessment.curriculum.topic,
-        assessment_text=(
-            assessment.part1_text if is_midterm
-            else (assessment.part2_text if is_mcq_format else assessment.assessment_text)
-        ),
+        assessment_text=assessment_text,
         duration_minutes=assessment.duration_minutes,
         scheduled_at=assessment.scheduled_at,
         due_date=assessment.due_date,
         status=assessment.status,
         is_midterm=is_midterm,
+        is_defense_only=is_defense_only,
         is_mcq_format=is_mcq_format,
         mcqs=json.loads(assessment.part1_text) if is_mcq_format else None,
     )

@@ -64,7 +64,7 @@ from app.interfaces.llm import (
 from app.interfaces.scheduler import AssessmentJobIds
 from app.main import app
 from app.models.assessment import Assessment, AssessmentStatus
-from app.models.curriculum import Curriculum, CurriculumStatus
+from app.models.curriculum import Curriculum, CurriculumEntryType, CurriculumStatus
 from app.models.grade import Grade
 from app.models.prompt_template import PromptTemplate
 from app.models.submission import Submission, SubmissionType
@@ -290,6 +290,12 @@ class FakeLLM:
         )
 
     def generate_midterm(self, req: MidtermGenerationRequest) -> MidtermGenerationResult:
+        if req.defense_only:
+            return MidtermGenerationResult(
+                part2_text="Checkpoint defense: defend your project's design decisions.",
+                part2_rubric="Rubric — full marks for well-justified decisions.",
+                duration_minutes=60,
+            )
         return MidtermGenerationResult(
             part1_text="Part 1: small coding questions on cumulative material.",
             part1_rubric="Part 1 rubric — full marks for correct implementations.",
@@ -311,6 +317,12 @@ class FakeLLM:
         )
 
     def grade_midterm_submission(self, req: MidtermGradingRequest) -> MidtermGradingResult:
+        if req.defense_only:
+            return MidtermGradingResult(
+                part2_score=req.part2_max_marks * 0.9,
+                weak_areas=[],
+                overall_feedback="Clear project defense.",
+            )
         return MidtermGradingResult(
             part1_score=req.part1_max_marks * 0.9,
             part2_score=req.part2_max_marks * 0.9,
@@ -319,6 +331,12 @@ class FakeLLM:
         )
 
     def generate_midterm_retest(self, req: MidtermRetestGenerationRequest) -> MidtermGenerationResult:
+        if req.defense_only:
+            return MidtermGenerationResult(
+                part2_text="Checkpoint retest: defend your project's design decisions again.",
+                part2_rubric="Rubric — full marks for well-justified decisions.",
+                duration_minutes=60,
+            )
         return MidtermGenerationResult(
             part1_text="Part 1 retest: focus on weak areas identified previously.",
             part1_rubric="Part 1 retest rubric — full marks for correcting weak areas.",
@@ -347,6 +365,12 @@ class FakeLLMBelowThreshold(FakeLLM):
         )
 
     def grade_midterm_submission(self, req: MidtermGradingRequest) -> MidtermGradingResult:
+        if req.defense_only:
+            return MidtermGradingResult(
+                part2_score=req.part2_max_marks * 0.7,
+                weak_areas=["project architecture rationale"],
+                overall_feedback="Needs improvement on the project defense.",
+            )
         return MidtermGradingResult(
             part1_score=req.part1_max_marks * 0.7,
             part2_score=req.part2_max_marks * 0.7,
@@ -565,9 +589,12 @@ def seed_prompt_templates(db: Session) -> None:
         "curriculum_analysis",
         "retest_generation",
         "midterm_generation",
+        "midterm_generation_defense_only",
         "midterm_retest_generation",
+        "midterm_retest_generation_defense_only",
         "grading",
         "midterm_grading",
+        "midterm_grading_defense_only",
         "mcq_grading",
         "project_grading",
         "reschedule_classification",
@@ -619,7 +646,17 @@ def make_assessment(
     part2_text: str | None = None,
     part2_rubric: str | None = None,
 ) -> tuple[Assessment, str]:
-    """Return (assessment, token). assessment.scheduled_job_ids is pre-populated."""
+    """Return (assessment, token). assessment.scheduled_job_ids is pre-populated.
+
+    assessment_text/rubric default to a canned legacy-format pair, but
+    never for a Midterm curriculum — a real Midterm Assessment never has
+    these set (see CurriculumUploadService._schedule_entry_assessment),
+    only part1_text/part2_text. Leaving the canned default on for a
+    Midterm fixture would make Assessment.content_generated read as
+    "already generated" from creation, regardless of part1_text/part2_text
+    actually being None.
+    """
+    is_midterm = curriculum.entry_type == CurriculumEntryType.midterm
     assessment_id = str(uuid.uuid4())
     token = generate_submission_token(assessment_id)
     now = datetime.utcnow()
@@ -627,8 +664,8 @@ def make_assessment(
         id=assessment_id,
         curriculum_id=curriculum.id,
         attempt_number=attempt_number,
-        assessment_text="Explain the Python event loop in detail.",
-        rubric="Full marks for: event loop, coroutines, await semantics.",
+        assessment_text=None if is_midterm else "Explain the Python event loop in detail.",
+        rubric=None if is_midterm else "Full marks for: event loop, coroutines, await semantics.",
         part1_text=part1_text,
         part1_rubric=part1_rubric,
         part2_text=part2_text,

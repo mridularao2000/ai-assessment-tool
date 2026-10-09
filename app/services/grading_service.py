@@ -200,22 +200,23 @@ class GradingService:
         the existing mastery_threshold pass/fail comparison in
         grade_submission_job works identically for Midterms without a branch.
         """
+        detail = curriculum.midterm_detail
+        slug = "midterm_grading_defense_only" if detail.defense_only else "midterm_grading"
         prompt_template = (
             self.db.query(PromptTemplate)
             .filter(
-                PromptTemplate.slug == "midterm_grading",
+                PromptTemplate.slug == slug,
                 PromptTemplate.is_active.is_(True),
             )
             .first()
         )
         if prompt_template is None:
-            raise NotFoundError("No active 'midterm_grading' prompt template found.")
+            raise NotFoundError(f"No active {slug!r} prompt template found.")
 
-        detail = curriculum.midterm_detail
         resources = list(detail.known_now)
         readme_content = None
-        for slug, label in detail.pending_completion_labels.items():
-            value = detail.pending_completion_slots.get(slug)
+        for pending_slug, label in detail.pending_completion_labels.items():
+            value = detail.pending_completion_slots.get(pending_slug)
             if not value:
                 continue
             if "readme" in label.lower():
@@ -231,22 +232,25 @@ class GradingService:
         ):
             grading_result = self.llm.grade_midterm_submission(
                 MidtermGradingRequest(
-                    part1_text=assessment.part1_text or "",
-                    part1_rubric=assessment.part1_rubric or "",
                     part2_text=assessment.part2_text or "",
                     part2_rubric=assessment.part2_rubric or "",
                     part1_max_marks=detail.part1_max_marks,
                     part2_max_marks=detail.part2_max_marks,
-                    part1_submission_content=submission.part1_text_content or "",
                     part2_submission_content=part2_content,
                     prompt_template_body=prompt_template.body,
+                    part1_text=None if detail.defense_only else assessment.part1_text,
+                    part1_rubric=None if detail.defense_only else assessment.part1_rubric,
+                    part1_submission_content=(
+                        None if detail.defense_only else submission.part1_text_content
+                    ),
+                    defense_only=detail.defense_only,
                     resources=resources,
                     readme_content=readme_content,
                 )
             )
 
         max_marks = curriculum.max_marks or (detail.part1_max_marks + detail.part2_max_marks)
-        score_earned = grading_result.part1_score + grading_result.part2_score
+        score_earned = (grading_result.part1_score or 0.0) + grading_result.part2_score
         mastery_score = (score_earned / max_marks * 100.0) if max_marks else 0.0
 
         grade = Grade(

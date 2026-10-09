@@ -16,7 +16,7 @@ def send_assessment_job(assessment_id: str) -> None:
     """Scheduler entrypoint: send assessment email and activate assessment.
 
     For curriculum-upload entries, content isn't generated until this exact
-    moment (assessment_text and part1_text are both still None) — deferring
+    moment (Assessment.content_generated is still False) — deferring
     generation to send-time keeps resource-grounding maximally current and
     avoids spending LLM calls on exams that were scheduled weeks/months
     earlier. Standalone assessments already have their content populated
@@ -49,7 +49,7 @@ def send_assessment_job(assessment_id: str) -> None:
             if assessment is None:
                 return
 
-            if assessment.assessment_text is None and assessment.part1_text is None:
+            if assessment.content_generated is False:
                 service = AssessmentService(db, _llm)
                 if assessment.curriculum.entry_type == CurriculumEntryType.midterm:
                     service.generate_midterm_content(assessment)

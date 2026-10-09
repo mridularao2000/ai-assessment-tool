@@ -311,7 +311,11 @@ class AssessmentService:
         from app.services.curriculum_upload_service import _build_entry_dates
 
         detail = curriculum.midterm_detail
-        prompt_template = self._fetch_prompt("midterm_retest_generation")
+        slug = (
+            "midterm_retest_generation_defense_only" if detail.defense_only
+            else "midterm_retest_generation"
+        )
+        prompt_template = self._fetch_prompt(slug)
         cumulative_pool_content, own_resources, readme_content = self._assemble_midterm_pool(curriculum)
 
         with llm_log_context(
@@ -326,12 +330,13 @@ class AssessmentService:
                     probe_focus=detail.probe_focus,
                     part1_max_marks=detail.part1_max_marks,
                     part2_max_marks=detail.part2_max_marks,
-                    previous_part1_score=grade.part1_score or 0.0,
+                    previous_part1_score=grade.part1_score,
                     previous_part2_score=grade.part2_score or 0.0,
                     weak_areas=grade.weak_areas or [],
                     attempt_number=previous_attempt + 1,
                     prompt_template_body=prompt_template.body,
                     readme_content=readme_content,
+                    defense_only=detail.defense_only,
                 )
             )
 
@@ -377,15 +382,20 @@ class AssessmentService:
         from app.services.curriculum_upload_service import assemble_part1_pool
 
         detail = curriculum.midterm_detail
-        qualifying, used_fallback = assemble_part1_pool(self.db, curriculum)
-        if used_fallback:
-            cumulative_pool_content = "\n".join(f"- {r}" for r in detail.known_now)
+        if detail.defense_only:
+            # No Part 1 at all for a running-project checkpoint — never
+            # assemble (or pay the DB query for) a pool nobody asked for.
+            cumulative_pool_content = ""
         else:
-            cumulative_pool_content = "\n\n".join(
-                f"[{e.chapter_label}] {e.topic}\n"
-                f"Resources: {', '.join(r.source_ref for r in e.resources)}"
-                for e in qualifying
-            )
+            qualifying, used_fallback = assemble_part1_pool(self.db, curriculum)
+            if used_fallback:
+                cumulative_pool_content = "\n".join(f"- {r}" for r in detail.known_now)
+            else:
+                cumulative_pool_content = "\n\n".join(
+                    f"[{e.chapter_label}] {e.topic}\n"
+                    f"Resources: {', '.join(r.source_ref for r in e.resources)}"
+                    for e in qualifying
+                )
 
         own_resources = list(detail.known_now)
         readme_content = None
@@ -448,7 +458,8 @@ class AssessmentService:
         """
         curriculum = assessment.curriculum
         detail = curriculum.midterm_detail
-        prompt_template = self._fetch_prompt("midterm_generation")
+        slug = "midterm_generation_defense_only" if detail.defense_only else "midterm_generation"
+        prompt_template = self._fetch_prompt(slug)
         cumulative_pool_content, own_resources, readme_content = self._assemble_midterm_pool(curriculum)
 
         with llm_log_context(
@@ -465,6 +476,7 @@ class AssessmentService:
                     part2_max_marks=detail.part2_max_marks,
                     prompt_template_body=prompt_template.body,
                     readme_content=readme_content,
+                    defense_only=detail.defense_only,
                 )
             )
         assessment.part1_text = result.part1_text
@@ -538,7 +550,7 @@ class AssessmentService:
                 f"No late-submission tokens available for curriculum {curriculum_id!r}."
             )
 
-        has_content = assessment.part1_text is not None if is_midterm else assessment.assessment_text is not None
+        has_content = assessment.content_generated
         if not has_content:
             if is_midterm:
                 self.generate_midterm_content(assessment)

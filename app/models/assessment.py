@@ -105,14 +105,24 @@ class Assessment(Base):
     @property
     def content_generated(self) -> bool:
         """True once the actual LLM-generated content exists on this row —
-        assessment_text (standalone/Assessment-type) or part1_text
-        (Midterm-type). Distinct from `status`: an `expired` row can be
-        either a genuine generate-then-never-submitted case, or one created
-        directly in `expired` with content still null (see
-        CurriculumUploadService._create_retroactive_expired_assessment,
-        whose generation is deferred to first access) — `status` alone
-        can't tell those apart, this can."""
-        return self.assessment_text is not None or self.part1_text is not None
+        assessment_text (standalone/Assessment-type) or part1_text/
+        part2_text (Midterm-type, and the MCQ + Coding Project format).
+        Distinct from `status`: an `expired` row can be either a genuine
+        generate-then-never-submitted case, or one created directly in
+        `expired` with content still null (see CurriculumUploadService.
+        _create_retroactive_expired_assessment, whose generation is
+        deferred to first access) — `status` alone can't tell those apart,
+        this can.
+
+        part2_text is checked too, not just part1_text: a defense_only
+        Midterm (see MidtermDetail.defense_only) never gets part1_text at
+        all, so checking part1_text alone would read as "never generated"
+        forever for that row even after real part2_text content exists."""
+        return (
+            self.assessment_text is not None
+            or self.part1_text is not None
+            or self.part2_text is not None
+        )
 
     # ── Relationships ─────────────────────────────────────────────────────────
     curriculum: Mapped["Curriculum"] = relationship(

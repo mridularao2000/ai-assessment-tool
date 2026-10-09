@@ -19,6 +19,7 @@ import pytest
 from app.models._utils import utcnow
 from app.models.assessment import Assessment, AssessmentStatus
 from app.models.late_submission_token import LateSubmissionToken
+from app.models.midterm_detail import MidtermDetail
 from app.models.submission import Submission, SubmissionType
 from app.services.late_token_service import LateTokenService
 from tests.conftest import (
@@ -30,6 +31,23 @@ from tests.conftest import (
 
 
 VALID_TEXT = "Async/await allows cooperative multitasking without OS threads."
+
+
+def _add_midterm_detail(db, curriculum, *, defense_only: bool = False) -> None:
+    """A real Midterm curriculum always has a MidtermDetail row (see
+    CurriculumUploadService._create_entry) — these tests construct a bare
+    midterm curriculum directly, so this fills in the same invariant."""
+    db.add(MidtermDetail(
+        curriculum_id=curriculum.id,
+        known_now=["design doc"],
+        pending_completion_labels={},
+        pending_completion_slots={},
+        probe_focus="architecture decisions",
+        part1_max_marks=0.0 if defense_only else 30.0,
+        part2_max_marks=curriculum.max_marks if defense_only else 70.0,
+        defense_only=defense_only,
+    ))
+    db.commit()
 
 
 class TestSubmissionValidation:
@@ -425,6 +443,7 @@ class TestLateSubmissionTokens:
         from app.models.curriculum import CurriculumEntryType
 
         curriculum = make_curriculum(db, entry_type=CurriculumEntryType.midterm)
+        _add_midterm_detail(db, curriculum)
         assessment, token = make_assessment(
             db, curriculum, status=AssessmentStatus.expired, due_offset_days=-1
         )
@@ -551,6 +570,7 @@ class TestMidtermTwoPartSubmission:
         from app.models.curriculum import CurriculumEntryType
 
         curriculum = make_curriculum(db, entry_type=CurriculumEntryType.midterm)
+        _add_midterm_detail(db, curriculum)
         assessment, token = make_assessment(db, curriculum, status=AssessmentStatus.active)
 
         response = client.get(f"/api/v1/assessments/{assessment.id}?token={token}")
@@ -571,6 +591,7 @@ class TestMidtermTwoPartSubmission:
         from app.models.curriculum import CurriculumEntryType
 
         curriculum = make_curriculum(db, entry_type=CurriculumEntryType.midterm)
+        _add_midterm_detail(db, curriculum)
         assessment, token = make_assessment(db, curriculum, status=AssessmentStatus.active)
 
         response = client.post("/api/v1/submissions/", data={
@@ -586,6 +607,7 @@ class TestMidtermTwoPartSubmission:
         from app.models.curriculum import CurriculumEntryType
 
         curriculum = make_curriculum(db, entry_type=CurriculumEntryType.midterm)
+        _add_midterm_detail(db, curriculum)
         assessment, token = make_assessment(db, curriculum, status=AssessmentStatus.active)
 
         response = client.post("/api/v1/submissions/", data={

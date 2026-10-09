@@ -1,7 +1,7 @@
 import uuid
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import Float, ForeignKey, JSON, String, Text
+from sqlalchemy import Boolean, Float, ForeignKey, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -42,6 +42,12 @@ class MidtermDetail(Base):
     special_case: Mapped[Optional[str]] = mapped_column(Text, default=None)
     part1_max_marks: Mapped[float] = mapped_column(Float, nullable=False)
     part2_max_marks: Mapped[float] = mapped_column(Float, nullable=False)
+    # True for a running-project checkpoint (upload's "running_project": true)
+    # that wants Part 2 (project defense) only — no cumulative Part 1. Checked
+    # by generation, submission, and grading; see each site's own comments.
+    # Never inferred from part1_max_marks == 0 — that's a derived number set
+    # BECAUSE of this flag, not an independent signal of it.
+    defense_only: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     curriculum: Mapped["Curriculum"] = relationship(
         "Curriculum", back_populates="midterm_detail"

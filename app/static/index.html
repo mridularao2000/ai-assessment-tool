@@ -688,7 +688,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const { ok, data } = await api(
       `/api/v1/assessments/${encodeURIComponent(aid)}?token=${encodeURIComponent(token)}`
     );
-    if (ok && data.is_midterm) {
+    if (ok && data.is_midterm && !data.is_defense_only) {
       document.getElementById('s_part1_section').classList.remove('d-none');
       document.getElementById('s_type_label').textContent = 'Part 2 — Project Submission Type';
     } else if (ok && data.is_mcq_format) {

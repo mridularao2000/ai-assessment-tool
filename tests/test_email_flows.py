@@ -121,7 +121,19 @@ class TestRecipientRoutingByEntryType:
         monkeypatch.setenv("USER_EMAIL", "owner@example.com")
         monkeypatch.delenv("EXAM_RECIPIENT_EMAIL", raising=False)
 
+        from app.models.midterm_detail import MidtermDetail
+
         curriculum = make_curriculum(db, entry_type=CurriculumEntryType.midterm)
+        db.add(MidtermDetail(
+            curriculum_id=curriculum.id,
+            known_now=["design doc"],
+            pending_completion_labels={},
+            pending_completion_slots={},
+            probe_focus="architecture decisions",
+            part1_max_marks=30.0,
+            part2_max_marks=70.0,
+        ))
+        db.commit()
         assessment, _ = make_assessment(db, curriculum, status=AssessmentStatus.active)
         email = RecordingEmailAdapter()
 

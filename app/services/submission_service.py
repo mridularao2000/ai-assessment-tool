@@ -61,6 +61,11 @@ class SubmissionService:
         text_content/uploaded_file continue to represent Part 2 (the
         project) exactly as for any other submission. For anything else
         (standalone or Assessment-type), part1_text_content must be absent.
+        A defense_only Midterm (a running-project checkpoint — see
+        MidtermDetail.defense_only) is the one exception within the
+        Midterm case itself: it has no Part 1 at all, so it's treated like
+        the non-midterm case here — part1_text_content must be absent for
+        it too, not required.
 
         For an assessment generated under the new MCQ + Coding Project
         format (Assessment.part1_text is not None and it isn't a
@@ -87,7 +92,8 @@ class SubmissionService:
              project-resources gate. Raise InvalidStateError otherwise —
              an assessment that expired in an earlier calendar month is
              no longer late-eligible even if tokens remain.
-          4. Verify part1_text_content is present iff the entry is a Midterm.
+          4. Verify part1_text_content is present iff the entry is a
+             non-defense_only Midterm.
           5. Resolve file_path for submission_type == file:
                - Resolve settings.uploads_dir, create directory if absent.
                - Write bytes under <uploads_dir>/<uuid>_<original_filename>.
@@ -118,6 +124,7 @@ class SubmissionService:
         upload_id = assessment.curriculum.upload_id
 
         is_midterm = assessment.curriculum.entry_type == CurriculumEntryType.midterm
+        is_defense_only = is_midterm and assessment.curriculum.midterm_detail.defense_only
         is_mcq_format = not is_midterm and assessment.part1_text is not None
 
         is_late = False
@@ -148,14 +155,18 @@ class SubmissionService:
                 f"Assessment {assessment_id!r} already has a submission."
             )
 
-        if is_midterm and not (part1_text_content and part1_text_content.strip()):
+        if is_midterm and not is_defense_only and not (part1_text_content and part1_text_content.strip()):
             raise InvalidStateError(
                 f"Assessment {assessment_id!r} is a Midterm — part1_text_content "
                 "(answering the assignment questions) is required."
             )
-        if not is_midterm and part1_text_content:
+        # A defense_only Midterm (running-project checkpoint — see
+        # MidtermDetail.defense_only) has no Part 1 at all, so it's treated
+        # like the non-midterm case here: part1_text_content must be
+        # absent, not required.
+        if (not is_midterm or is_defense_only) and part1_text_content:
             raise InvalidStateError(
-                f"Assessment {assessment_id!r} is not a Midterm — "
+                f"Assessment {assessment_id!r} has no Part 1 — "
                 "part1_text_content must not be supplied."
             )
 
@@ -192,7 +203,7 @@ class SubmissionService:
                 else None
             ),
             file_path=file_path,
-            part1_text_content=part1_text_content if is_midterm else None,
+            part1_text_content=part1_text_content if (is_midterm and not is_defense_only) else None,
             mcq_answers=mcq_answers if is_mcq_format else None,
         )
         self.db.add(submission)

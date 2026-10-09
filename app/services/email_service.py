@@ -49,6 +49,7 @@ class EmailService:
         settings = get_settings()
         is_entry = assessment.curriculum.entry_type is not None
         is_midterm = assessment.curriculum.entry_type == CurriculumEntryType.midterm
+        is_defense_only = is_midterm and assessment.curriculum.midterm_detail.defense_only
         is_mcq_format = not is_midterm and assessment.part1_text is not None
         recipients = (
             [settings.exam_recipient_email or settings.user_email]
@@ -58,6 +59,12 @@ class EmailService:
             assessment_text = ""
             part2_text = assessment.part2_text
             mcqs = json.loads(assessment.part1_text)
+        elif is_defense_only:
+            # No Part 1 at all for a running-project checkpoint — unlike a
+            # normal Midterm, there's nothing to put in assessment_text.
+            assessment_text = ""
+            part2_text = assessment.part2_text
+            mcqs = None
         elif is_midterm:
             assessment_text = assessment.part1_text or ""
             part2_text = assessment.part2_text
@@ -73,6 +80,7 @@ class EmailService:
             assessment_text=assessment_text,
             part2_text=part2_text,
             mcqs=mcqs,
+            is_defense_only=is_defense_only,
             duration_minutes=assessment.duration_minutes,
             scheduled_at=assessment.scheduled_at,
             due_date=assessment.due_date,

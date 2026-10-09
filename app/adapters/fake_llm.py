@@ -78,6 +78,12 @@ class FakeLLMAdapter:
     def generate_midterm(
         self, request: MidtermGenerationRequest
     ) -> MidtermGenerationResult:
+        if request.defense_only:
+            return MidtermGenerationResult(
+                part2_text=f"[FAKE_LLM] Canned Part 2 (defense-only) for {request.topic!r}.",
+                part2_rubric="[FAKE_LLM] Award full marks for any substantive answer.",
+                duration_minutes=45,
+            )
         return MidtermGenerationResult(
             part1_text=f"[FAKE_LLM] Canned Part 1 for {request.topic!r}.",
             part1_rubric="[FAKE_LLM] Award full marks for any substantive answer.",
@@ -89,6 +95,15 @@ class FakeLLMAdapter:
     def generate_midterm_retest(
         self, request: MidtermRetestGenerationRequest
     ) -> MidtermGenerationResult:
+        if request.defense_only:
+            return MidtermGenerationResult(
+                part2_text=(
+                    f"[FAKE_LLM] Canned Part 2 (defense-only) retest for "
+                    f"{request.topic!r}."
+                ),
+                part2_rubric="[FAKE_LLM] Award full marks for any substantive answer.",
+                duration_minutes=45,
+            )
         return MidtermGenerationResult(
             part1_text=(
                 f"[FAKE_LLM] Canned Part 1 retest for {request.topic!r} "
@@ -117,6 +132,12 @@ class FakeLLMAdapter:
     def grade_midterm_submission(
         self, request: MidtermGradingRequest
     ) -> MidtermGradingResult:
+        if request.defense_only:
+            return MidtermGradingResult(
+                part2_score=request.part2_max_marks,
+                weak_areas=[],
+                overall_feedback="[FAKE_LLM] Canned passing grade — test mode, not real grading.",
+            )
         return MidtermGradingResult(
             part1_score=request.part1_max_marks,
             part2_score=request.part2_max_marks,

@@ -44,6 +44,11 @@ class AssessmentEmailData:
     # never the answer key, which stays server-side in part1_rubric. When
     # set, assessment_text is unused and part1 renders as this instead.
     mcqs: Optional[list[dict]] = None
+    # True for a running-project checkpoint (see MidtermDetail.defense_only)
+    # — a Midterm with no Part 1 at all. part2_text is the whole exam;
+    # assessment_text is unused (empty) and must not render an empty
+    # "Part 1" section alongside it.
+    is_defense_only: bool = False
 
 
 @dataclass

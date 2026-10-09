@@ -578,6 +578,12 @@ class AnthropicLLMAdapter:
             raw = self._call(prompt, max_tokens=16000, tools=tools, budget=budget)
             data = self._parse_json(raw)
             try:
+                if req.defense_only:
+                    return MidtermGenerationResult(
+                        part2_text=str(data["part2_text"]),
+                        part2_rubric=str(data["part2_rubric"]),
+                        duration_minutes=int(data["duration_minutes"]),
+                    )
                 return MidtermGenerationResult(
                     part1_text=str(data["part1_text"]),
                     part1_rubric=str(data["part1_rubric"]),
@@ -666,6 +672,12 @@ class AnthropicLLMAdapter:
             raw = self._call(prompt, max_tokens=16000, tools=tools, budget=budget)
             data = self._parse_json(raw)
             try:
+                if req.defense_only:
+                    return MidtermGenerationResult(
+                        part2_text=str(data["part2_text"]),
+                        part2_rubric=str(data["part2_rubric"]),
+                        duration_minutes=int(data["duration_minutes"]),
+                    )
                 return MidtermGenerationResult(
                     part1_text=str(data["part1_text"]),
                     part1_rubric=str(data["part1_rubric"]),
@@ -845,40 +857,75 @@ class AnthropicLLMAdapter:
         )
 
     def grade_midterm_submission(self, request: MidtermGradingRequest) -> MidtermGradingResult:
+        """Grade a Midterm submission. When request.defense_only is False,
+        part1_text/part1_rubric/part1_submission_content must all be set —
+        checked explicitly and raised on up front (before any API call,
+        wasting nothing) rather than passed through to _render(), where a
+        None would silently stringify to the literal text "None" inside
+        the prompt instead of failing loudly."""
         resources = filter_fetchable_resources(request.resources or [])
 
         def _attempt(
             req: MidtermGradingRequest, attempt: int, budget: "_CallBudget | None" = None
         ) -> MidtermGradingResult:
-            prompt = self._render(
-                req.prompt_template_body,
-                part1_text=req.part1_text,
-                part1_rubric=req.part1_rubric,
-                part2_text=req.part2_text,
-                part2_rubric=req.part2_rubric,
-                part1_max_marks=req.part1_max_marks,
-                part2_max_marks=req.part2_max_marks,
-                part1_submission_content=req.part1_submission_content,
-                part2_submission_content=req.part2_submission_content,
-                resource_guidance=build_resource_guidance(resources),
-                readme_content=req.readme_content
-                or "(No project README/design writeup was submitted for this midterm.)",
-            )
+            if not req.defense_only and (
+                req.part1_text is None
+                or req.part1_rubric is None
+                or req.part1_submission_content is None
+            ):
+                raise LLMValidationError(
+                    "grade_midterm_submission: part1_text/part1_rubric/"
+                    "part1_submission_content must all be set when "
+                    "defense_only is False."
+                )
+
+            if req.defense_only:
+                prompt = self._render(
+                    req.prompt_template_body,
+                    part2_text=req.part2_text,
+                    part2_rubric=req.part2_rubric,
+                    part2_max_marks=req.part2_max_marks,
+                    part2_submission_content=req.part2_submission_content,
+                    resource_guidance=build_resource_guidance(resources),
+                    readme_content=req.readme_content
+                    or "(No project README/design writeup was submitted for this midterm.)",
+                )
+            else:
+                prompt = self._render(
+                    req.prompt_template_body,
+                    part1_text=req.part1_text,
+                    part1_rubric=req.part1_rubric,
+                    part2_text=req.part2_text,
+                    part2_rubric=req.part2_rubric,
+                    part1_max_marks=req.part1_max_marks,
+                    part2_max_marks=req.part2_max_marks,
+                    part1_submission_content=req.part1_submission_content,
+                    part2_submission_content=req.part2_submission_content,
+                    resource_guidance=build_resource_guidance(resources),
+                    readme_content=req.readme_content
+                    or "(No project README/design writeup was submitted for this midterm.)",
+                )
             if attempt > 0:
                 prompt += _RETRY_NUDGE_TOOL_AWARE
             tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL] if resources else None
             raw = self._call(prompt, max_tokens=8000, tools=tools, budget=budget)
             data = self._parse_json(raw)
             try:
-                part1_score = float(data["part1_score"])
                 part2_score = float(data["part2_score"])
-                if not (0.0 <= part1_score <= req.part1_max_marks):
-                    raise ValueError(
-                        f"part1_score {part1_score} out of range 0-{req.part1_max_marks}"
-                    )
                 if not (0.0 <= part2_score <= req.part2_max_marks):
                     raise ValueError(
                         f"part2_score {part2_score} out of range 0-{req.part2_max_marks}"
+                    )
+                if req.defense_only:
+                    return MidtermGradingResult(
+                        part2_score=part2_score,
+                        weak_areas=list(data["weak_areas"]),
+                        overall_feedback=str(data["overall_feedback"]),
+                    )
+                part1_score = float(data["part1_score"])
+                if not (0.0 <= part1_score <= req.part1_max_marks):
+                    raise ValueError(
+                        f"part1_score {part1_score} out of range 0-{req.part1_max_marks}"
                     )
                 return MidtermGradingResult(
                     part1_score=part1_score,

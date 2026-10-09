@@ -54,6 +54,9 @@ PENDING_COLUMNS: dict[str, list[str]] = {
         "ALTER TABLE curriculum_uploads ADD COLUMN closed_at DATETIME",
         "ALTER TABLE curriculum_uploads ADD COLUMN last_secondary_transcript_sent_at DATETIME",
     ],
+    "midterm_details": [
+        "ALTER TABLE midterm_details ADD COLUMN defense_only BOOLEAN NOT NULL DEFAULT 0",
+    ],
 }
 
 

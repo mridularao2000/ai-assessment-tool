@@ -287,6 +287,11 @@ class MidtermGenerationRequest:
     part2_max_marks: float
     prompt_template_body: str
     readme_content: Optional[str] = None
+    # True for a running-project checkpoint that wants Part 2 (defense)
+    # only — see MidtermDetail.defense_only. The adapter uses this to pick
+    # which JSON schema to require/parse (part2-only vs. both parts), not
+    # to post-hoc discard an unwanted part1 the LLM generated anyway.
+    defense_only: bool = False
 
 
 @dataclass
@@ -312,15 +317,21 @@ class MidtermGradingRequest:
     no pending-resource slot on this midterm was identified as the README.
     """
 
-    part1_text: str
-    part1_rubric: str
     part2_text: str
     part2_rubric: str
     part1_max_marks: float
     part2_max_marks: float
-    part1_submission_content: str
     part2_submission_content: str
     prompt_template_body: str
+    # None for a defense_only Midterm (see MidtermDetail.defense_only) —
+    # never a fabricated placeholder. The caller (GradingService) must
+    # supply real values for all three whenever defense_only is False;
+    # the adapter raises rather than silently rendering a missing value
+    # into the prompt — see grade_midterm_submission's docstring.
+    part1_text: Optional[str] = None
+    part1_rubric: Optional[str] = None
+    part1_submission_content: Optional[str] = None
+    defense_only: bool = False
     resources: Optional[list[str]] = None
     readme_content: Optional[str] = None
 
@@ -343,11 +354,14 @@ class MidtermRetestGenerationRequest:
     probe_focus: Optional[str]
     part1_max_marks: float
     part2_max_marks: float
-    previous_part1_score: float
     previous_part2_score: float
     weak_areas: list[str]
     attempt_number: int
     prompt_template_body: str
+    # None for a defense_only Midterm — there was never a Part 1 score to
+    # have. See MidtermGenerationRequest.defense_only.
+    previous_part1_score: Optional[float] = None
+    defense_only: bool = False
     readme_content: Optional[str] = None
 
 
@@ -421,13 +435,18 @@ class AssessmentGenerationResult:
 
 @dataclass
 class MidtermGenerationResult:
-    """Output of generate_midterm — two independently-scored parts."""
+    """Output of generate_midterm / generate_midterm_retest — two
+    independently-scored parts, usually. part1_text/part1_rubric are None
+    for a defense_only Midterm (see MidtermGenerationRequest.defense_only)
+    — never a fabricated placeholder; every consumer that writes these to
+    Assessment.part1_text/part1_rubric must tolerate None rather than
+    assume a real Part 1 always exists."""
 
-    part1_text: str
-    part1_rubric: str
     part2_text: str
     part2_rubric: str
     duration_minutes: int
+    part1_text: Optional[str] = None
+    part1_rubric: Optional[str] = None
 
 
 @dataclass
@@ -451,10 +470,12 @@ class MidtermGradingResult:
     same role as GradingResult.weak_areas for single-part retests.
     """
 
-    part1_score: float  # 0.0–part1_max_marks
     part2_score: float  # 0.0–part2_max_marks
     weak_areas: list[str]
     overall_feedback: str
+    # None for a defense_only Midterm — there is no Part 1 to score. See
+    # MidtermGradingRequest.defense_only.
+    part1_score: Optional[float] = None
 
 
 @dataclass

@@ -99,6 +99,7 @@ class _ParsedEntry:
     special_case: Optional[str]
     part1_max_marks: Optional[float]
     part2_max_marks: Optional[float]
+    running_project: bool  # midterm-only: Part 2 (defense) only, no cumulative Part 1
 
 
 def _require(item: dict, field_name: str, entry_label: str) -> Any:
@@ -161,6 +162,11 @@ def _parse_entries(topics_raw: list) -> list[_ParsedEntry]:
             known_now = list(resources_raw["known_now"])
             pending_labels = list(resources_raw["pending_completion"])
 
+        if item.get("running_project") and entry_type != CurriculumEntryType.midterm:
+            raise CurriculumUploadValidationError(
+                f"Entry {label!r}: running_project is only valid on a midterm-type entry."
+            )
+
         parsed.append(
             _ParsedEntry(
                 topic=topic,
@@ -177,6 +183,7 @@ def _parse_entries(topics_raw: list) -> list[_ParsedEntry]:
                 special_case=item.get("special_case"),
                 part1_max_marks=item.get("part1_max_marks"),
                 part2_max_marks=item.get("part2_max_marks"),
+                running_project=bool(item.get("running_project", False)),
             )
         )
     return parsed
@@ -321,17 +328,28 @@ class CurriculumUploadService:
             # Default split: Part 2 (finish the project and submit) = 70%,
             # Part 1 (pass the assignment — cumulative questions) = 30%.
             # Either can be overridden per-entry via part1_max_marks/
-            # part2_max_marks in the upload file.
-            part1 = (
-                entry.part1_max_marks
-                if entry.part1_max_marks is not None
-                else entry.max_marks * 0.30
-            )
-            part2 = (
-                entry.part2_max_marks
-                if entry.part2_max_marks is not None
-                else entry.max_marks * 0.70
-            )
+            # part2_max_marks in the upload file. A running_project (
+            # defense_only) checkpoint has no Part 1 at all, so the full
+            # max_marks goes to Part 2 instead of the usual 70% — leaving
+            # the normal split here would silently cap every such
+            # checkpoint at 70% of its recorded marks (see
+            # AssessmentService._assemble_midterm_pool /
+            # generate_midterm_content for the generation-side suppression
+            # this pairs with).
+            if entry.running_project:
+                part1 = entry.part1_max_marks if entry.part1_max_marks is not None else 0.0
+                part2 = entry.part2_max_marks if entry.part2_max_marks is not None else entry.max_marks
+            else:
+                part1 = (
+                    entry.part1_max_marks
+                    if entry.part1_max_marks is not None
+                    else entry.max_marks * 0.30
+                )
+                part2 = (
+                    entry.part2_max_marks
+                    if entry.part2_max_marks is not None
+                    else entry.max_marks * 0.70
+                )
             self.db.add(
                 MidtermDetail(
                     curriculum_id=curriculum.id,
@@ -342,6 +360,7 @@ class CurriculumUploadService:
                     special_case=entry.special_case,
                     part1_max_marks=part1,
                     part2_max_marks=part2,
+                    defense_only=entry.running_project,
                 )
             )
             all_filled = all(v is not None for v in slots.values())
@@ -502,10 +521,10 @@ class CurriculumUploadService:
         or regenerated. Only the schedule moves; assessment_text/rubric/
         part1_text/part2_text are left exactly as they are. When the new
         scheduled_at arrives, the normal send_assessment_job pipeline runs
-        and its own `if assessment_text is None and part1_text is None:
-        generate()` check finds content already there and skips straight
-        to (re)sending it — zero additional LLM cost, no new logic needed
-        for that half of the behavior.
+        and its own `if not content_generated: generate()` check finds
+        content already there and skips straight to (re)sending it — zero
+        additional LLM cost, no new logic needed for that half of the
+        behavior.
 
         Not exposed to the UI — no frontend action calls this. It exists
         as a direct backend API for bulk-shifting a batch of missed

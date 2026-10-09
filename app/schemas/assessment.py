@@ -50,6 +50,10 @@ class AssessmentDetailResponse(BaseModel):
     # show the separate Part 1 (assignment) answer field alongside the
     # normal Part 2 (project) submission fields.
     is_midterm: bool = False
+    # True for a running-project checkpoint (see MidtermDetail.defense_only)
+    # — a Midterm with no Part 1 at all. Tells the frontend NOT to show the
+    # Part 1 (assignment) answer field even though is_midterm is True.
+    is_defense_only: bool = False
     # True for an assessment generated under the new MCQ + Coding Project
     # format (see AssessmentGenerationResult) — tells the frontend to show
     # 5 MCQ answer selectors alongside the normal project submission

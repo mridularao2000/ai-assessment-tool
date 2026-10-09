@@ -59,12 +59,19 @@ class HtmlEmailBodyMixin:
         {"".join(f"<li><strong>{letter}.</strong> {_e(opt)}</li>" for letter, opt in zip("ABCD", q["options"]))}
       </ul>
     </div>""" for i, q in enumerate(data.mcqs))
+        elif data.is_defense_only:
+            # No Part 1 at all for a running-project checkpoint — the
+            # defense (part2_text) IS the whole exam, shown as the one
+            # section rather than split across an empty "Part 1" box and
+            # a separate "Part 2" box.
+            part1_heading = "Project Defense"
+            part1_body = f'<div style="white-space:pre-wrap;line-height:1.6">{_e(data.part2_text)}</div>'
         else:
             part1_heading = "Part 1 — Assignment" if data.part2_text else "Assessment"
             part1_body = f'<div style="white-space:pre-wrap;line-height:1.6">{_e(data.assessment_text)}</div>'
 
         part2_section = ""
-        if data.part2_text:
+        if data.part2_text and not data.is_defense_only:
             part2_heading = "Section 2 — Coding Project" if is_mcq else "Part 2 — Project Submission"
             part2_section = f"""
   <div style="background:#f1f3f5;border-left:4px solid #6610f2;padding:16px 20px;

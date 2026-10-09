@@ -274,6 +274,50 @@ Respond with a single JSON object containing exactly these fields:
 Return ONLY the JSON object. Do not include any other text before or after it.\
 """
 
+# Variables: {topic}, {own_resources_list}, {resource_guidance},
+#            {readme_content}, {probe_focus}, {part2_max_marks}
+# Defense-only variant for a running-project checkpoint (upload's
+# "running_project": true) — Part 2 (project defense) only, no cumulative
+# Part 1. See MidtermDetail.defense_only.
+_MIDTERM_GENERATION_DEFENSE_ONLY = """\
+You are an expert technical assessment designer for a software engineering \
+learning platform, designing one checkpoint of a running project — a \
+project defense, not a two-part exam. There is no Part 1; grade only what \
+follows.
+
+Project: {topic}
+
+Probe the real decisions made in the project itself so far. Ground it in \
+the project's own resources listed below:
+{own_resources_list}
+
+{resource_guidance}
+
+Project README / design writeup on record for this project (submitted when \
+this checkpoint's pending resources were filled in):
+{readme_content}
+
+If a README is present above, prefer probing the SPECIFIC claims and file/\
+function references it makes — questions tied to concrete claims are easier \
+to grade accurately later than generic ones. If no README is present, probe \
+the project's real decisions using the other resources above instead.
+
+Probe focus: {probe_focus}
+
+Ask the student to defend specific decisions they made in the project at \
+this checkpoint — not generic questions about the technology in the \
+abstract. This checkpoint is worth {part2_max_marks} marks in total.
+
+Respond with a single JSON object containing exactly these fields:
+{{
+  "part2_text": "The full checkpoint defense text presented to the student. Use markdown formatting, numbered questions tied to the probe focus.",
+  "part2_rubric": "Marking rubric — per-question expected answers with full/partial/no marks, totalling {part2_max_marks}.",
+  "duration_minutes": 60
+}}
+
+Return ONLY the JSON object. Do not include any other text before or after it.\
+"""
+
 # Variables: {topic}, {cumulative_pool_content}, {own_resources_list},
 #            {resource_guidance}, {readme_content}, {probe_focus},
 #            {part1_max_marks}, {part2_max_marks}, {previous_part1_score},
@@ -328,6 +372,54 @@ Respond with a single JSON object containing exactly these fields:
   "part2_text": "The full Part 2 retest text presented to the student. Use markdown formatting, numbered questions tied to the probe focus.",
   "part2_rubric": "Marking rubric for Part 2 — per-question expected answers with full/partial/no marks, totalling {part2_max_marks}.",
   "duration_minutes": 120
+}}
+
+Return ONLY the JSON object. Do not include any other text before or after it.\
+"""
+
+# Variables: {topic}, {own_resources_list}, {resource_guidance},
+#            {readme_content}, {probe_focus}, {part2_max_marks},
+#            {previous_part2_score}, {weak_areas}, {attempt_number}
+# Defense-only retest variant — see _MIDTERM_GENERATION_DEFENSE_ONLY.
+_MIDTERM_RETEST_GENERATION_DEFENSE_ONLY = """\
+You are an expert technical assessment designer for a software engineering \
+learning platform, designing a RETAKE of one checkpoint of a running \
+project — a project defense, not a two-part exam. There is no Part 1; \
+grade only what follows.
+
+Project: {topic}
+
+The student did not pass on attempt {attempt_number}. Previous score: \
+{previous_part2_score}/{part2_max_marks}. Identified weak areas: {weak_areas}.
+
+Probe the real decisions made in the project itself so far. Ground it in \
+the project's own resources listed below:
+{own_resources_list}
+
+{resource_guidance}
+
+Project README / design writeup on record for this project (submitted when \
+this checkpoint's pending resources were filled in):
+{readme_content}
+
+If a README is present above, prefer probing the SPECIFIC claims and file/\
+function references it makes — questions tied to concrete claims are easier \
+to grade accurately later than generic ones. If no README is present, probe \
+the project's real decisions using the other resources above instead.
+
+Probe focus: {probe_focus}
+
+Ask about different aspects of the project than a first attempt would, \
+weighted toward the identified weak areas, while still asking the student \
+to defend specific real decisions — not generic questions about the \
+technology in the abstract. This checkpoint is worth {part2_max_marks} \
+marks in total.
+
+Respond with a single JSON object containing exactly these fields:
+{{
+  "part2_text": "The full checkpoint retest text presented to the student. Use markdown formatting, numbered questions tied to the probe focus.",
+  "part2_rubric": "Marking rubric — per-question expected answers with full/partial/no marks, totalling {part2_max_marks}.",
+  "duration_minutes": 60
 }}
 
 Return ONLY the JSON object. Do not include any other text before or after it.\
@@ -397,6 +489,67 @@ Respond with a single JSON object containing exactly these fields:
 
 Rules:
 - part1_score must be a number between 0.0 and {part1_max_marks}
+- part2_score must be a number between 0.0 and {part2_max_marks}
+- weak_areas lists 0–5 specific topics where the student showed gaps \
+(use an empty list [] if they demonstrated strong mastery throughout)
+- overall_feedback should be 2–4 sentences: acknowledge strengths, name \
+specific gaps, and give one actionable improvement suggestion
+Return ONLY the JSON object. Do not include any other text before or after it.\
+"""
+
+# Variables: {part2_text}, {part2_rubric}, {part2_submission_content},
+#            {part2_max_marks}, {resource_guidance}, {readme_content}
+# Defense-only grading variant — grades the project defense alone, out of
+# the FULL checkpoint max_marks (part2_max_marks == max_marks when
+# defense_only; see CurriculumUploadService._create_entry). There is no
+# Part 1 to grade.
+_MIDTERM_GRADING_DEFENSE_ONLY = """\
+You are an expert technical assessor for a software engineering learning \
+platform, grading one checkpoint of a running project — a project defense, \
+not a two-part exam. There is no Part 1; grade only what follows.
+
+Checkpoint defense ({part2_max_marks} marks)
+
+Exam:
+{part2_text}
+
+Rubric:
+{part2_rubric}
+
+Student's submission (their real project):
+{part2_submission_content}
+
+{resource_guidance}
+
+Project README / design writeup on record for this project (submitted when \
+this checkpoint's pending resources were filled in):
+{readme_content}
+
+SPOT-CHECK — light, not a full code review: the README above may reference \
+specific file paths and/or function names to support its design decisions. \
+For each such reference, use the fetchable resources above (web_search/ \
+web_fetch) to confirm whether that file/function actually exists and \
+roughly matches what's claimed. You are not expected to read the whole \
+codebase — only check the specific claims made. If a referenced path does \
+not exist, or exists but clearly contradicts the claim, that is a real \
+misrepresentation and must meaningfully lower part2_score, not just be \
+noted as a footnote. If the references check out, that confirms the \
+defense is grounded in the real project — it does not by itself earn \
+extra credit beyond what the defense's actual content deserves.
+
+Grade by checking the student's claims and explanations against the actual \
+project resources above — not only against the abstract rubric. A defense \
+that sounds plausible but misrepresents what the project actually contains \
+or does must NOT receive full credit for the claims that don't hold up.
+
+Respond with a single JSON object containing exactly these fields:
+{{
+  "part2_score": 21.0,
+  "weak_areas": ["specific concept 1", "specific concept 2"],
+  "overall_feedback": "Detailed, constructive feedback for the student."
+}}
+
+Rules:
 - part2_score must be a number between 0.0 and {part2_max_marks}
 - weak_areas lists 0–5 specific topics where the student showed gaps \
 (use an empty list [] if they demonstrated strong mastery throughout)
@@ -568,9 +721,12 @@ SEED_TEMPLATES: Final[dict[str, tuple[str, str]]] = {
     "curriculum_analysis":       ("1.0", _CURRICULUM_ANALYSIS),
     "retest_generation":         ("2.0", _RETEST_GENERATION),
     "midterm_generation":        ("1.1", _MIDTERM_GENERATION),
+    "midterm_generation_defense_only": ("1.0", _MIDTERM_GENERATION_DEFENSE_ONLY),
     "midterm_retest_generation": ("1.1", _MIDTERM_RETEST_GENERATION),
+    "midterm_retest_generation_defense_only": ("1.0", _MIDTERM_RETEST_GENERATION_DEFENSE_ONLY),
     "grading":                   ("1.0", _GRADING),
     "midterm_grading":           ("1.1", _MIDTERM_GRADING),
+    "midterm_grading_defense_only": ("1.0", _MIDTERM_GRADING_DEFENSE_ONLY),
     "mcq_grading":                ("1.0", _MCQ_GRADING),
     "project_grading":            ("1.0", _PROJECT_GRADING),
     "reschedule_classification": ("1.0", _RESCHEDULE_CLASSIFICATION),
@@ -588,6 +744,16 @@ REQUIRED_SLUGS: Final[frozenset[str]] = frozenset({
     # grading fails outright for every one of them, with no other signal.
     "midterm_generation",
     "midterm_grading",
+    # A failing first attempt silently strands the student with no retest
+    # ever generated if this is missing — same severity as the first-
+    # attempt template above, just later in the lifecycle, so it belongs
+    # here too rather than being treated as best-effort.
+    "midterm_retest_generation",
+    # Same reasoning, for the subset of Midterms that are running-project
+    # (defense_only) checkpoints — see MidtermDetail.defense_only.
+    "midterm_generation_defense_only",
+    "midterm_grading_defense_only",
+    "midterm_retest_generation_defense_only",
     # assessment_generation/retest_generation now always produce the MCQ +
     # Coding Project format (v2.0) — grading every such assessment fails
     # outright without these two.
